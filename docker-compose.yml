@@ -1,0 +1,42 @@
+version: '3.8'
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: tokendb
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  golang-service:
+    build: 
+      context: ./golang-service
+      dockerfile: Dockerfile
+    environment:
+      - REDIS_ADDR=redis:6379
+    ports:
+      - "50051:50051"
+      - "9090:9090"
+    depends_on:
+      - redis
+
+  python-service:
+    build: 
+      context: ./python-service
+      dockerfile: Dockerfile
+    environment:
+      - DATABASE_URL=postgres://postgres:postgres@postgres:5432/tokendb
+      - TOKEN_SERVICE_HOST=golang-service:50051
+    ports:
+      - "8000:8000"
+    depends_on:
+      - postgres
+      - golang-service
