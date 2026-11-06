@@ -1,0 +1,41 @@
+name: CI Build and Test
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Boot up the environment
+      run: |
+        # This runs the docker-compose.yml file you created
+        docker compose up -d --build
+        
+        # Wait 15 seconds for PostgreSQL and Redis to fully start up
+        sleep 15
+
+    - name: Verify Python API Health
+      run: |
+        # Hit the health endpoint to ensure the FastAPI service is running
+        curl -f http://localhost:8000/health
+
+    - name: Verify Go Metrics Endpoint
+      run: |
+        # Ensure the Go service metrics are available
+        curl -f http://localhost:9090/metrics
+
+    - name: View Container Logs (On Failure)
+      if: failure()
+      run: docker compose logs
+
+    - name: Tear down environment
+      if: always()
+      run: docker compose down
