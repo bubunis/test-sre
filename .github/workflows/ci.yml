@@ -1,4 +1,4 @@
-name: CI Build and Test
+name: CI Pipeline
 
 on:
   push:
@@ -7,30 +7,88 @@ on:
     branches: [ "main" ]
 
 jobs:
-  build-and-test:
+  # JOB 1: Build Validation
+  build-images:
     runs-on: ubuntu-latest
-
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Boot up the environment
+    - name: Validate Docker Build
+      run: docker compose build
+
+  # JOB 2: Observability & Health Check Contract
+  test-health-metrics:
+    needs: build-images
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Boot up ephemeral environment
       run: |
-        # This runs the docker-compose.yml file you created
         docker compose up -d --build
-        
-        # Wait 15 seconds for PostgreSQL and Redis to fully start up
         sleep 15
 
-    - name: Verify Python API Health
-      run: |
-        # Hit the health endpoint to ensure the FastAPI service is running
-        curl -f http://localhost:8000/health
+    - name: Verify Python Health Endpoint
+      run: curl -f http://localhost:8000/health
 
     - name: Verify Go Metrics Endpoint
+      run: curl -f http://localhost:9090/metrics
+
+    - name: View Container Logs (On Failure)
+      if: failure()
+      run: docker compose logs
+
+    - name: Tear down environment
+      if: always()
+      run: docker compose down
+
+  # JOB 3: End-to-End Critical User Journey (Stateful)
+  test-e2e-token-flow:
+    needs: build-images
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Boot up ephemeral environment
       run: |
-        # Ensure the Go service metrics are available
-        curl -f http://localhost:9090/metrics
+        docker compose up -d --build
+        sleep 15
+
+    - name: Mint Token & Verify Postgres Permissions
+      run: |
+        echo "Requesting token for alice@example.com..."
+        RESPONSE=$(curl -s -X POST http://localhost:8000/token \
+          -H "Content-Type: application/json" \
+          -d '{"user_email": "alice@example.com"}')
+          
+        TOKEN=$(echo $RESPONSE | jq -r .token)
+        PERMISSIONS=$(echo $RESPONSE | jq -r '.permissions | join(",")')
+        
+        if [ "$TOKEN" == "null" ] || [ -z "$TOKEN" ]; then
+          echo "ERROR: Failed to generate token!"
+          exit 1
+        fi
+        
+        if [[ "$PERMISSIONS" != *"read:data"* ]]; then
+          echo "ERROR: Database join failed. Missing permissions!"
+          exit 1
+        fi
+        
+        echo "TOKEN=$TOKEN" >> $GITHUB_ENV
+
+    - name: Verify Redis Payload Storage
+      run: |
+        echo "Checking Redis for token payload..."
+        REDIS_VAL=$(docker compose exec redis redis-cli GET "token:${{ env.TOKEN }}")
+        
+        if [[ "$REDIS_VAL" != *"alice@example.com"* ]]; then
+          echo "ERROR: Token payload not found in Redis!"
+          exit 1
+        fi
+        echo "SUCCESS: E2E Token flow validated!"
 
     - name: View Container Logs (On Failure)
       if: failure()
