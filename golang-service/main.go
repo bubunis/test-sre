@@ -9,7 +9,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"time"
+
+	pb "token-service/proto"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -25,13 +28,12 @@ import (
 	"go.opentelemetry.io/otel/exporters/stdout/stdoutlog"
 	"go.opentelemetry.io/otel/log/global"
 	"go.opentelemetry.io/otel/propagation"
-	"go.opentelemetry.io/otel/sdk/resource"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
+	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	pb "token-service/proto"
 )
 
 var (
@@ -65,12 +67,17 @@ func initOtel() func() {
 
 	// Only export to OTLP if endpoint is configured
 	if endpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"); endpoint != "" {
+		//Strip the http:// scheme to satisfy the Go gRPC dialer while remaining OTel compliant
+		cleanEndpoint := strings.TrimPrefix(endpoint, "http://")
+
 		// Trace exporter
 		traceExporter, err := otlptracegrpc.New(ctx,
-			otlptracegrpc.WithEndpoint(endpoint),
+			otlptracegrpc.WithEndpoint(cleanEndpoint),
 			otlptracegrpc.WithTLSCredentials(insecure.NewCredentials()),
 		)
-		if err == nil {
+		if err != nil {
+			panic("OTEL Trace Exporter Failed: " + err.Error())
+		} else {
 			tp = sdktrace.NewTracerProvider(
 				sdktrace.WithBatcher(traceExporter),
 				sdktrace.WithResource(res),
@@ -79,7 +86,7 @@ func initOtel() func() {
 
 		// Log exporter
 		logExporter, err := otlploggrpc.New(ctx,
-			otlploggrpc.WithEndpoint(endpoint),
+			otlploggrpc.WithEndpoint(cleanEndpoint),
 			otlploggrpc.WithTLSCredentials(insecure.NewCredentials()),
 		)
 		if err == nil {
@@ -173,7 +180,12 @@ func main() {
 		http.ListenAndServe(":9090", nil)
 	}()
 
-	lis, _ := net.Listen("tcp", ":50051")
+	lis, err := net.Listen("tcp", ":50051")
+
+	// Error Handling has been introduced to check if the port is already in use and log an error message accordingly.
+	if err != nil {
+		logger.Error("Failed to bind to port 50051. Is another process using it?", "error", err)
+	}
 	// gRPC server with OpenTelemetry auto-instrumentation
 	s := grpc.NewServer(grpc.StatsHandler(otelgrpc.NewServerHandler()))
 	pb.RegisterTokenServiceServer(s, &server{rdb: rdb})

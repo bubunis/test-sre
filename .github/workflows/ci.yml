@@ -7,8 +7,9 @@ on:
     branches: [ "main" ]
 
 jobs:
-  # JOB 1: Build Validation
+  # JOB 1: Build Validation (Fail Fast)
   build-images:
+    name: Build & Validate
     runs-on: ubuntu-latest
     steps:
     - name: Checkout code
@@ -19,6 +20,7 @@ jobs:
 
   # JOB 2: Observability & Health Check Contract
   test-health-metrics:
+    name: Observability Contracts
     needs: build-images
     runs-on: ubuntu-latest
     steps:
@@ -30,7 +32,7 @@ jobs:
         docker compose up -d --build
         sleep 15
 
-    - name: Verify Python Health Endpoint
+    - name: Verify Python API Health
       run: curl -f http://localhost:8000/health
 
     - name: Verify Go Metrics Endpoint
@@ -46,6 +48,7 @@ jobs:
 
   # JOB 3: End-to-End Critical User Journey (Stateful)
   test-e2e-token-flow:
+    name: Stateful E2E Flow
     needs: build-images
     runs-on: ubuntu-latest
     steps:
@@ -57,13 +60,15 @@ jobs:
         docker compose up -d --build
         sleep 15
 
-    - name: Mint Token & Verify Postgres Permissions
+    - name: Integration Test - Mint Token & Verify Permissions
       run: |
         echo "Requesting token for alice@example.com..."
         RESPONSE=$(curl -s -X POST http://localhost:8000/token \
           -H "Content-Type: application/json" \
           -d '{"user_email": "alice@example.com"}')
           
+        echo "API Response: $RESPONSE"
+        
         TOKEN=$(echo $RESPONSE | jq -r .token)
         PERMISSIONS=$(echo $RESPONSE | jq -r '.permissions | join(",")')
         
@@ -79,10 +84,12 @@ jobs:
         
         echo "TOKEN=$TOKEN" >> $GITHUB_ENV
 
-    - name: Verify Redis Payload Storage
+    - name: Integration Test - Verify Redis Storage
       run: |
-        echo "Checking Redis for token payload..."
+        echo "Checking if Golang successfully stored Token $TOKEN in Redis..."
+        
         REDIS_VAL=$(docker compose exec redis redis-cli GET "token:${{ env.TOKEN }}")
+        echo "Redis Value: $REDIS_VAL"
         
         if [[ "$REDIS_VAL" != *"alice@example.com"* ]]; then
           echo "ERROR: Token payload not found in Redis!"
