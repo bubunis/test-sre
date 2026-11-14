@@ -1,79 +1,92 @@
-#version: '5.7'
+# Step 1: no hardcoded passwords, nothing published except the API.
+# Secrets are read from ./secrets (created by scripts/init-secrets.sh, never committed).
 
 services:
   postgres:
     image: postgres:15-alpine
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
       POSTGRES_DB: tokendb
-    ports:
-      # Mapped to 5433 on your Mac to avoid conflicts with local Postgres installs
-      - "5433:5432"
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
     volumes:
-      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    # no "ports:" - reachable only by other containers
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    # requirepass is set in the mounted config file, not on the command line
+    command: ["redis-server", "/run/secrets/redis_conf"]
+    secrets:
+      - redis_conf
+      - redis_password
+    # no "ports:" - reachable only by other containers
 
   jaeger:
     image: jaegertracing/all-in-one:latest
     environment:
       - COLLECTOR_OTLP_ENABLED=true
     ports:
-      - "16686:16686" # Web UI
+      - "127.0.0.1:16686:16686" # Web UI, this machine only
 
   otel-collector:
     image: otel/opentelemetry-collector:latest
     command: ["--config=/etc/otel-collector-config.yaml"]
     volumes:
-      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml
-    ports:
-      - "4317:4317"   # OTLP gRPC receiver
-      - "4318:4318"   # OTLP HTTP receiver
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
     depends_on:
       - jaeger
+    # no "ports:" - services reach it on the internal network
 
   prometheus:
     image: prom/prometheus:latest
     volumes:
-      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     ports:
-      # Mapped to 9091 to avoid clashing with the Go service
-      - "9091:9090"
+      - "127.0.0.1:9091:9090" # UI, this machine only
     depends_on:
       - golang-service
       - python-service
 
   golang-service:
-    build: 
+    build:
       context: ./golang-service
       dockerfile: Dockerfile
     environment:
       - REDIS_ADDR=redis:6379
+      - REDIS_PASSWORD_FILE=/run/secrets/redis_password
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
-    ports:
-      # Mapped to 50052 to bypass your Mac's locked 50051 port
-      - "50052:50051"
-      - "9090:9090"   # Prometheus metrics port
+    secrets:
+      - redis_password
     depends_on:
       - redis
       - otel-collector
+    # no "ports:" - gRPC and /metrics are internal only
 
   python-service:
-    build: 
+    build:
       context: ./python-service
       dockerfile: Dockerfile
     environment:
-      # Uses the internal Docker network port 5432, completely isolated from your Mac's 5433
-      - DATABASE_URL=postgres://postgres:postgres@postgres:5432/tokendb
+      # no password in the URL; it is read from DB_PASSWORD_FILE
+      - DATABASE_URL=postgres://postgres@postgres:5432/tokendb
+      - DB_PASSWORD_FILE=/run/secrets/postgres_password
       - TOKEN_SERVICE_HOST=golang-service:50051
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+    secrets:
+      - postgres_password
     ports:
-      - "8000:8000"
+      - "8000:8000" # the only service reachable from outside
     depends_on:
       - postgres
       - golang-service
       - otel-collector
+
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password.txt
+  redis_password:
+    file: ./secrets/redis_password.txt
+  redis_conf:
+    file: ./secrets/redis.conf
