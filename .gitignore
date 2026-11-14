@@ -20,3 +20,6 @@ venv/
 
 # macOS
 .DS_Store
+
+# Local secrets (created by scripts/init-secrets.sh)
+secrets/
