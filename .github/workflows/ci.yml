@@ -15,6 +15,18 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
+    - name: Create secrets
+      run: ./scripts/init-secrets.sh
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: golang-service/go.mod
+
+    - name: Go unit tests
+      working-directory: golang-service
+      run: go test ./...
+
     - name: Validate Docker Build
       run: docker compose build
 
@@ -27,6 +39,9 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
+    - name: Create secrets
+      run: ./scripts/init-secrets.sh
+
     - name: Boot up ephemeral environment
       run: |
         docker compose up -d --build
@@ -36,7 +51,7 @@ jobs:
       run: curl -f http://localhost:8000/health
 
     - name: Verify Go Metrics Endpoint
-      run: curl -f http://localhost:9090/metrics
+      run: docker compose exec -T golang-service wget -qO- http://localhost:9090/metrics
 
     - name: View Container Logs (On Failure)
       if: failure()
@@ -54,6 +69,9 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+
+    - name: Create secrets
+      run: ./scripts/init-secrets.sh
 
     - name: Boot up ephemeral environment
       run: |
@@ -88,7 +106,7 @@ jobs:
       run: |
         echo "Checking if Golang successfully stored Token $TOKEN in Redis..."
         
-        REDIS_VAL=$(docker compose exec redis redis-cli GET "token:${{ env.TOKEN }}")
+        REDIS_VAL=$(docker compose exec -T -e REDISCLI_AUTH="$(cat secrets/redis_password.txt)" redis redis-cli GET "token:${{ env.TOKEN }}")
         echo "Redis Value: $REDIS_VAL"
         
         if [[ "$REDIS_VAL" != *"alice@example.com"* ]]; then

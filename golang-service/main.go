@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"token-service/internal/tokenpolicy"
 	pb "token-service/proto"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -33,7 +34,9 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 )
 
 var (
@@ -127,11 +130,24 @@ func (s *server) MintToken(ctx context.Context, req *pb.MintTokenRequest) (*pb.M
 	start := time.Now()
 	logger.InfoContext(ctx, "minting token", "user", req.UserEmail)
 
+	// Server decides the lifetime: 0 means the default, out-of-range is refused,
+	// and a token can never be stored without an expiry.
+	ttl, err := tokenpolicy.TTL(req.TtlSeconds)
+	if err != nil {
+		tokensTotal.WithLabelValues("rejected").Inc()
+		logger.WarnContext(ctx, "invalid ttl requested", "ttl_seconds", req.TtlSeconds)
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
 	bytes := make([]byte, 32)
-	rand.Read(bytes)
+	if _, err := rand.Read(bytes); err != nil {
+		tokensTotal.WithLabelValues("error").Inc()
+		logger.ErrorContext(ctx, "random source failed", "error", err.Error())
+		return nil, status.Error(codes.Internal, "could not generate token")
+	}
 	token := hex.EncodeToString(bytes)
 
-	if err := s.rdb.Set(ctx, "token:"+token, req.UserEmail, time.Duration(req.TtlSeconds)*time.Second).Err(); err != nil {
+	if err := s.rdb.Set(ctx, "token:"+token, req.UserEmail, ttl).Err(); err != nil {
 		tokensTotal.WithLabelValues("error").Inc()
 		logger.ErrorContext(ctx, "redis error", "error", err.Error())
 		return nil, err
@@ -159,7 +175,16 @@ func main() {
 	if redisAddr == "" {
 		redisAddr = "localhost:6379"
 	}
-	redisPassword := os.Getenv("REDIS_PASSWORD")
+	// Read the Redis password from a file (Docker secret), never from a plain env value
+	redisPassword := ""
+	if f := os.Getenv("REDIS_PASSWORD_FILE"); f != "" {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			logger.Error("cannot read REDIS_PASSWORD_FILE", "error", err)
+			os.Exit(1)
+		}
+		redisPassword = strings.TrimSpace(string(b))
+	}
 
 	// Redis client with OpenTelemetry instrumentation
 	rdb := redis.NewClient(&redis.Options{
