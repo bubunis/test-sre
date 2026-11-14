@@ -5,9 +5,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 umask 077
-mkdir -p secrets
-chmod 700 secrets   # only your user can open the folder on this machine
-
+mkdir -p secrets    # Create a new dir for storing secrets.
+chmod 700 secrets   # Changing the permission.
+ 
 if [[ ! -f secrets/postgres_password.txt ]]; then
   openssl rand -hex 32 | tr -d '\n' > secrets/postgres_password.txt
   echo "created secrets/postgres_password.txt"
