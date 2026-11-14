@@ -63,7 +63,16 @@ FastAPIInstrumentor.instrument_app(app)
 # Instrument FastAPI for automatic Prometheus metrics (exposes /metrics)
 Instrumentator().instrument(app).expose(app)
 
-DB_URL = os.getenv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/tokendb")
+DB_URL = os.environ["DATABASE_URL"]  # required, and contains no password
+
+
+def _read_secret(path_env: str) -> str:
+    """Read a secret from the file named in an environment variable."""
+    with open(os.environ[path_env]) as f:
+        return f.read().strip()
+
+
+DB_PASSWORD = _read_secret("DB_PASSWORD_FILE")
 GRPC_HOST = os.getenv("TOKEN_SERVICE_HOST", "localhost:50051")
 
 @app.get("/health")
@@ -78,7 +87,7 @@ def faq():
 def request_token(req: TokenRequest):
     logger.info(f"Token request for {req.user_email}")
 
-    conn = psycopg2.connect(DB_URL)
+    conn = psycopg2.connect(DB_URL, password=DB_PASSWORD)
     cur = conn.cursor()
     cur.execute("""
         SELECT ARRAY_AGG(DISTINCT gp.permission)

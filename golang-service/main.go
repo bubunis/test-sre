@@ -159,7 +159,16 @@ func main() {
 	if redisAddr == "" {
 		redisAddr = "localhost:6379"
 	}
-	redisPassword := os.Getenv("REDIS_PASSWORD")
+	// Read the Redis password from a file (Docker secret), never from a plain env value
+	redisPassword := ""
+	if f := os.Getenv("REDIS_PASSWORD_FILE"); f != "" {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			logger.Error("cannot read REDIS_PASSWORD_FILE", "error", err)
+			os.Exit(1)
+		}
+		redisPassword = strings.TrimSpace(string(b))
+	}
 
 	// Redis client with OpenTelemetry instrumentation
 	rdb := redis.NewClient(&redis.Options{
