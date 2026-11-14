@@ -18,6 +18,15 @@ jobs:
     - name: Create secrets
       run: ./scripts/init-secrets.sh
 
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: golang-service/go.mod
+
+    - name: Go unit tests
+      working-directory: golang-service
+      run: go test ./...
+
     - name: Validate Docker Build
       run: docker compose build
 
