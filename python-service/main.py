@@ -1,6 +1,6 @@
 """Token Issuance Service - with observability"""
 import os, logging, grpc, psycopg2, uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
 from opentelemetry import trace
 from opentelemetry._logs import set_logger_provider
@@ -17,6 +17,7 @@ from opentelemetry.instrumentation.grpc import GrpcInstrumentorClient
 from opentelemetry.instrumentation.psycopg2 import Psycopg2Instrumentor
 from prometheus_fastapi_instrumentator import Instrumentator
 import token_pb2, token_pb2_grpc
+from auth import Caller, configure_auth, require_caller
 
 # Set W3C Trace Context propagator for cross-service trace correlation
 set_global_textmap(CompositePropagator([TraceContextTextMapPropagator()]))
@@ -45,6 +46,9 @@ set_logger_provider(log_provider)
 handler = LoggingHandler(level=logging.INFO, logger_provider=log_provider)
 logging.basicConfig(level=logging.INFO, handlers=[handler])
 logger = logging.getLogger(__name__)
+
+# Callers must present a valid JWT. Refuse to start if JWT settings are missing (fail closed).
+configure_auth()
 
 # Instrument gRPC client for trace propagation
 GrpcInstrumentorClient().instrument()
@@ -84,8 +88,10 @@ def faq():
     return {"message": "This is a token issuance service. Use POST /token to request a token."}
 
 @app.post("/token")
-def request_token(req: TokenRequest):
-    logger.info(f"Token request for {req.user_email}")
+def request_token(req: TokenRequest, caller: Caller = Depends(require_caller)):
+    # Only reached when the caller's JWT is valid; caller.client_id says which service asked.
+    trace.get_current_span().set_attribute("app.client_id", caller.client_id)
+    logger.info(f"Token request for {req.user_email}", extra={"client_id": caller.client_id})
 
     conn = psycopg2.connect(DB_URL, password=DB_PASSWORD)
     cur = conn.cursor()
