@@ -17,4 +17,11 @@ dependencies = [
     "opentelemetry-instrumentation-grpc==0.60b1",
     "opentelemetry-instrumentation-psycopg2==0.60b1",
     "opentelemetry-exporter-otlp-proto-grpc==1.39.1",
+    "pyjwt[crypto]>=2.10,<3",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=9.2.0",
 ]

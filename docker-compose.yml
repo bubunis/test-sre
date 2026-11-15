@@ -1,4 +1,5 @@
 # Step 1: no hardcoded passwords, nothing published except the API.
+# Step 3: POST /token requires a valid JWT (see JWT_* settings on python-service).
 # Secrets are read from ./secrets (created by scripts/init-secrets.sh, never committed).
 
 services:
@@ -74,8 +75,16 @@ services:
       - DB_PASSWORD_FILE=/run/secrets/postgres_password
       - TOKEN_SERVICE_HOST=golang-service:50051
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      # Step 3: callers must send a JWT. DEV values: the dev key pair stands in for the
+      # identity provider. In production use JWT_JWKS_URL instead of JWT_PUBLIC_KEY_FILE.
+      - JWT_ISSUER=https://idp.dev.local
+      - JWT_AUDIENCE=token-service
+      - JWT_ALGORITHMS=ES256
+      - JWT_REQUIRED_SCOPE=token:mint
+      - JWT_PUBLIC_KEY_FILE=/run/secrets/jwt_public
     secrets:
       - postgres_password
+      - jwt_public
     ports:
       - "8000:8000" # the only service reachable from outside
     depends_on:
@@ -90,3 +99,5 @@ secrets:
     file: ./secrets/redis_password.txt
   redis_conf:
     file: ./secrets/redis.conf
+  jwt_public:
+    file: ./secrets/jwt_dev_public.pem   # public key only; the private key never enters a container
