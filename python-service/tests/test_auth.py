@@ -148,6 +148,22 @@ def test_invalid_config_refuses_to_start(monkeypatch, env, message):
         auth.JWTSettings.from_env()
 
 
+def test_clock_skew_leeway(keys):
+    # Production default: 30 s leeway for clock differences between servers.
+    key, _, pub_file = keys
+    settings = auth.JWTSettings(
+        issuer=ISS, audience=AUD, algorithms=("ES256",), required_scope="token:mint",
+        leeway_seconds=30, jwks_url=None, public_key_file=pub_file, ca_file=None,
+    )
+    v = auth.JWTVerifier(settings)
+    now = int(time.time())
+    # expired 10 s ago: inside the leeway, still accepted
+    assert v.verify(_sign(key, exp=now - 10)).client_id == "login-service"
+    # expired 120 s ago: beyond the leeway, refused
+    with pytest.raises(jwt.ExpiredSignatureError):
+        v.verify(_sign(key, exp=now - 120))
+
+
 def test_jwks_mode_builds_with_installed_pyjwt(tmp_path):
     # Production uses JWT_JWKS_URL. Building the verifier must work with the
     # installed PyJWT version (no network call happens at construction).

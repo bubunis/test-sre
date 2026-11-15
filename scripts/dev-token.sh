@@ -3,7 +3,8 @@
 # Usage (from the repo root):
 #   TOKEN=$(bash scripts/dev-token.sh)                          # valid token
 #   TOKEN=$(bash scripts/dev-token.sh login-service profile)    # wrong scope  -> 403
-#   TOKEN=$(bash scripts/dev-token.sh login-service token:mint -10)  # expired -> 401
+#   TOKEN=$(bash scripts/dev-token.sh login-service token:mint -120) # expired -> 401
+#   (use more than -30: the API accepts tokens up to 30 s past expiry for clock skew)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

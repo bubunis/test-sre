@@ -7,6 +7,7 @@ Arguments: [client_id] [scope] [ttl_seconds]
   client_id    who is calling                 default: login-service
   scope        space-separated scopes         default: token:mint
   ttl_seconds  token lifetime; negative = already expired   default: 300
+               (the API allows 30 s of clock skew, so use -120 to test expiry)
 """
 import os
 import sys
