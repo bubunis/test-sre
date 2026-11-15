@@ -94,7 +94,8 @@ jobs:
         c=$(code -H "Authorization: Bearer not.a.jwt");          echo "garbage token -> $c"; [ "$c" = 401 ] || fail=1
         BAD=$(bash scripts/dev-token.sh login-service profile)
         c=$(code -H "Authorization: Bearer $BAD");               echo "wrong scope   -> $c"; [ "$c" = 403 ] || fail=1
-        OLD=$(bash scripts/dev-token.sh login-service token:mint -10)
+        # expired 2 minutes ago: beyond the API's 30 s clock-skew leeway
+        OLD=$(bash scripts/dev-token.sh login-service token:mint -120)
         c=$(code -H "Authorization: Bearer $OLD");               echo "expired       -> $c"; [ "$c" = 401 ] || fail=1
         exit $fail
 

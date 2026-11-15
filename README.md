@@ -85,8 +85,11 @@ mounted read-only, so the key never goes into an image.
 ```bash
 bash scripts/dev-token.sh                                  # valid: login-service, token:mint, 5 min
 bash scripts/dev-token.sh login-service profile            # wrong scope    → API returns 403
-bash scripts/dev-token.sh login-service token:mint -10     # already expired → API returns 401
+bash scripts/dev-token.sh login-service token:mint -120    # expired 2 min ago → API returns 401
 ```
+
+The API allows 30 seconds of clock skew (`JWT_LEEWAY_SECONDS`), so a token
+that expired less than 30 seconds ago is still accepted.
 
 The dev key pair stands in for an identity provider. **Never use it in
 production** (see [Production configuration](#production-configuration)).
