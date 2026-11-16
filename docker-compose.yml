@@ -1,5 +1,7 @@
 # Step 1: no hardcoded passwords, nothing published except the API.
 # Step 3: POST /token requires a valid JWT (see JWT_* settings on python-service).
+# O0: Grafana stack - Tempo (traces), Loki (logs), Prometheus (metrics), Grafana (UI).
+#     Config lives in ./observability. Grafana and Prometheus UIs are on 127.0.0.1 only.
 # Secrets are read from ./secrets (created by scripts/init-secrets.sh, never committed).
 
 services:
@@ -24,31 +26,86 @@ services:
       - redis_password
     # no "ports:" - reachable only by other containers
 
-  jaeger:
-    image: jaegertracing/all-in-one:latest
-    environment:
-      - COLLECTOR_OTLP_ENABLED=true
-    ports:
-      - "127.0.0.1:16686:16686" # Web UI, this machine only
+  # ---------- Observability (Grafana stack) ----------
 
   otel-collector:
+    # contrib build: includes the transform processor used to mask emails in logs
     image: otel/opentelemetry-collector:latest
-    command: ["--config=/etc/otel-collector-config.yaml"]
+    command: ["--config=/etc/otelcol/config.yaml"]
     volumes:
-      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+      - ./observability/otel-collector/config.yaml:/etc/otelcol/config.yaml:ro
     depends_on:
-      - jaeger
+      - tempo
+      - loki
     # no "ports:" - services reach it on the internal network
 
-  prometheus:
-    image: prom/prometheus:latest
+  tempo-init:
+    # one-off: give the Tempo data volume to Tempo's user (10001), then exit
+    image: grafana/tempo:2.6.1
+    user: root
+    entrypoint: ["chown", "10001:10001", "/var/tempo"]
     volumes:
-      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - tempo_data:/var/tempo
+    restart: "no"
+
+  tempo:
+    image: grafana/tempo:2.6.1
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    volumes:
+      - ./observability/tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo_data:/var/tempo
+    depends_on:
+      tempo-init:
+        condition: service_completed_successfully
+    # no "ports:" - Grafana queries it on the internal network
+
+  loki:
+    image: grafana/loki:3.3.2
+    command: ["-config.file=/etc/loki/loki.yaml"]
+    volumes:
+      - ./observability/loki/loki.yaml:/etc/loki/loki.yaml:ro
+      - loki_data:/loki
+    # no "ports:" - Grafana queries it on the internal network
+
+  prometheus:
+    image: prom/prometheus:v3.0.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
     ports:
       - "127.0.0.1:9091:9090" # UI, this machine only
     depends_on:
       - golang-service
       - python-service
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD__FILE=/run/secrets/grafana_admin_password
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SECURITY_DISABLE_GRAVATAR=true
+      - GF_ANALYTICS_REPORTING_ENABLED=false
+      - GF_ANALYTICS_CHECK_FOR_UPDATES=false
+      - GF_NEWS_NEWS_FEED_ENABLED=false
+    secrets:
+      - grafana_admin_password
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3000:3000" # UI, this machine only
+    depends_on:
+      - prometheus
+      - loki
+      - tempo
+
+  # ---------- Application ----------
 
   golang-service:
     build:
@@ -101,3 +158,11 @@ secrets:
     file: ./secrets/redis.conf
   jwt_public:
     file: ./secrets/jwt_dev_public.pem   # public key only; the private key never enters a container
+  grafana_admin_password:
+    file: ./secrets/grafana_admin_password.txt
+
+volumes:
+  tempo_data: {}
+  loki_data: {}
+  prometheus_data: {}
+  grafana_data: {}
