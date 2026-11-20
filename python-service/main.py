@@ -7,7 +7,7 @@ from opentelemetry._logs import set_logger_provider
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
-from opentelemetry.sdk._logs.export import BatchLogRecordProcessor, ConsoleLogExporter
+from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.propagate import set_global_textmap
 from opentelemetry.propagators.composite import CompositePropagator
@@ -17,6 +17,7 @@ from opentelemetry.instrumentation.grpc import GrpcInstrumentorClient
 from opentelemetry.instrumentation.psycopg2 import Psycopg2Instrumentor
 from prometheus_fastapi_instrumentator import Instrumentator
 import token_pb2, token_pb2_grpc
+import log_setup
 from auth import Caller, configure_auth, require_caller
 
 # Set W3C Trace Context propagator for cross-service trace correlation
@@ -38,13 +39,12 @@ log_provider = LoggerProvider(resource=resource)
 if otlp_endpoint:
     from opentelemetry.exporter.otlp.proto.grpc._log_exporter import OTLPLogExporter
     log_provider.add_log_record_processor(BatchLogRecordProcessor(OTLPLogExporter(endpoint=otlp_endpoint, insecure=True)))
-else:
-    log_provider.add_log_record_processor(BatchLogRecordProcessor(ConsoleLogExporter()))
 set_logger_provider(log_provider)
 
-# Configure Python logging to use OTel handler
-handler = LoggingHandler(level=logging.INFO, logger_provider=log_provider)
-logging.basicConfig(level=logging.INFO, handlers=[handler])
+# Logs go to stdout as JSON (with trace_id/span_id) and to OpenTelemetry (-> Loki).
+# Email addresses are replaced by a stable pseudonym before either output sees them.
+otel_handler = LoggingHandler(level=logging.INFO, logger_provider=log_provider)
+log_setup.configure("python-token-service", otel_handler)
 logger = logging.getLogger(__name__)
 
 # Callers must present a valid JWT. Refuse to start if JWT settings are missing (fail closed).
