@@ -58,7 +58,12 @@ jobs:
       run: curl -f http://localhost:8000/health
 
     - name: Verify Go Metrics Endpoint
-      run: docker compose exec -T golang-service wget -qO- http://localhost:9090/metrics
+      #run: docker compose exec -T golang-service wget -qO- http://localhost:9090/metrics ( Changes to this because the Go image is distroless and doesn't have wget)
+      run: |
+        # The Go image is distroless (no shell, no wget), so probe it from a curl container on the same network
+        NET=$(docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$(docker compose ps -q golang-service)" | awk '{print $1}')
+        METRICS=$(docker run --rm --network "$NET" curlimages/curl:8.11.1 -sf http://golang-service:9090/metrics)
+        echo "$METRICS" | grep -q "^go_goroutines" && echo "Go metrics endpoint OK"
 
     - name: View Container Logs (On Failure)
       if: failure()
