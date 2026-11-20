@@ -21,7 +21,6 @@ import (
 	"github.com/redis/go-redis/extra/redisotel/v9"
 	"github.com/redis/go-redis/v9"
 	"github.com/redis/go-redis/v9/maintnotifications"
-	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
@@ -112,8 +111,8 @@ func initOtel() func() {
 	otel.SetTracerProvider(tp)
 	global.SetLoggerProvider(lp)
 
-	// Create slog logger with OTel bridge
-	logger = otelslog.NewLogger("go-token-service")
+	// JSON to stdout (with trace_id/span_id) + OpenTelemetry; emails replaced (see logging.go)
+	logger = newLogger("go-token-service")
 
 	return func() {
 		tp.Shutdown(ctx)
