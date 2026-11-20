@@ -8,7 +8,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-docker compose run --rm --no-deps -T \
+# Run as your own user: the image runs as uid 10001, which can't read your private key (mode 600)
+docker compose run --rm --no-deps -T --user "$(id -u):$(id -g)" \
   -v "$PWD/secrets/jwt_dev_private.pem:/run/dev/jwt.key:ro" \
   -v "$PWD/scripts/dev_token.py:/run/dev/dev_token.py:ro" \
   python-service python /run/dev/dev_token.py "${1:-login-service}" "${2:-token:mint}" "${3:-300}"
