@@ -1,27 +1,25 @@
-# Stage 1: Build the binary
+# ---- Stage 1: build a static binary ----
 FROM golang:1.24-alpine AS builder
 
-WORKDIR /app
+WORKDIR /src
 
-# Copy module files and download dependencies first (for caching)
+# Dependencies first, so they're cached between builds
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy the rest of the source code
 COPY . .
 
-# Build a statically linked binary
-RUN CGO_ENABLED=0 GOOS=linux go build -o /token-server main.go
+# Static binary, no debug symbols, no local paths baked in
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/token-server .
 
-# Stage 2: Create the minimal production image
-FROM alpine:latest
+# ---- Stage 2: minimal runtime ----
+# distroless/static: no shell, no package manager, just the binary and CA certs
+FROM gcr.io/distroless/static-debian12:nonroot
 
-WORKDIR /
+COPY --from=builder /out/token-server /token-server
 
-# Copy the compiled binary from the builder stage
-COPY --from=builder /token-server /token-server
+# Numeric non-root user (65532 = "nonroot"), so Kubernetes runAsNonRoot can verify it
+USER 65532:65532
 
-# Expose gRPC port and Prometheus metrics port
 EXPOSE 50051 9090
-
-CMD ["/token-server"]
+ENTRYPOINT ["/token-server"]
