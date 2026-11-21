@@ -167,3 +167,10 @@ func redactAttr(a slog.Attr) slog.Attr {
 	}
 	return slog.Attr{Key: a.Key, Value: v}
 }
+
+// Default until main() sets up the real logger, so code (and tests) that log early never hit a nil logger.
+func init() {
+	if logger == nil {
+		logger = slog.Default()
+	}
+}
