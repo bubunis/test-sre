@@ -33,7 +33,7 @@ COPY --from=builder /opt/venv /opt/venv
 
 WORKDIR /app
 # Only the application files. They stay owned by root, so the app can't modify its own code.
-COPY main.py auth.py log_setup.py token_pb2.py token_pb2_grpc.py ./
+COPY main.py auth.py log_setup.py db_pool.py token_pb2.py token_pb2_grpc.py ./
 
 USER 10001:10001
 
