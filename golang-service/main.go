@@ -5,11 +5,14 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"token-service/internal/tokenpolicy"
@@ -170,14 +173,23 @@ func (s *server) ValidateToken(ctx context.Context, req *pb.ValidateTokenRequest
 }
 
 func main() {
+	grpcPort := envOr("GRPC_PORT", "50051")
+	metricsPort := envOr("METRICS_PORT", "9090")
+
+	// Docker healthcheck: the image has no shell or curl, so the binary checks itself (see health.go)
+	if len(os.Args) > 1 && os.Args[1] == "-healthcheck" {
+		os.Exit(runHealthcheck("127.0.0.1:" + grpcPort))
+	}
+
+	// Stop cleanly on SIGTERM (docker stop, Kubernetes) or Ctrl+C
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
+	defer stop()
+
 	cleanup := initOtel()
 	defer cleanup()
 
-	redisAddr := os.Getenv("REDIS_ADDR")
-	if redisAddr == "" {
-		redisAddr = "localhost:6379"
-	}
-	// Read the Redis password from a file (Docker secret), never from a plain env value
+	redisAddr := envOr("REDIS_ADDR", "localhost:6379")
+	// Read the Redis password from a file (Docker/Kubernetes secret), never from a plain env value
 	redisPassword := ""
 	if f := os.Getenv("REDIS_PASSWORD_FILE"); f != "" {
 		b, err := os.ReadFile(f)
@@ -203,28 +215,54 @@ func main() {
 
 	// Token-event queue: background worker plus queue-size metrics (see queue.go)
 	consumer, _ := os.Hostname()
-	go runTokenEventWorker(context.Background(), rdb, consumer)
-	go pollTokenEventQueue(context.Background(), rdb)
+	go runTokenEventWorker(ctx, rdb, consumer)
+	go pollTokenEventQueue(ctx, rdb)
 
 	// Metrics endpoint
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.Handler())
+	metricsSrv := &http.Server{Addr: ":" + metricsPort, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() {
-		http.Handle("/metrics", promhttp.Handler())
-		http.ListenAndServe(":9090", nil)
+		if err := metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("metrics server failed", "port", metricsPort, "error", err.Error())
+			os.Exit(1)
+		}
 	}()
 
-	lis, err := net.Listen("tcp", ":50051")
-
-	// Error Handling has been introduced to check if the port is already in use and log an error message accordingly.
+	lis, err := net.Listen("tcp", ":"+grpcPort)
 	if err != nil {
-		logger.Error("Failed to bind to port 50051. Is another process using it?", "error", err)
+		logger.Error("cannot listen for gRPC; is another process using the port?", "port", grpcPort, "error", err.Error())
+		os.Exit(1)
 	}
-	// gRPC server with OpenTelemetry auto-instrumentation
+
+	// gRPC server with OpenTelemetry auto-instrumentation and RED metrics
 	s := grpc.NewServer(
 		grpc.StatsHandler(otelgrpc.NewServerHandler()),
-		grpc.ChainUnaryInterceptor(metricsInterceptor), // RED metrics, see grpc_metrics.go
+		grpc.ChainUnaryInterceptor(metricsInterceptor), // see grpc_metrics.go
 	)
 	pb.RegisterTokenServiceServer(s, &server{rdb: rdb})
+	hs := startHealth(ctx, s, rdb)
 
-	logger.Info("token service starting", "grpc_port", 50051, "metrics_port", 9090)
-	s.Serve(lis)
+	// Graceful shutdown: report NOT_SERVING, finish in-flight requests (max 10 s), then stop
+	go func() {
+		<-ctx.Done()
+		logger.Info("shutting down")
+		hs.Shutdown()
+		done := make(chan struct{})
+		go func() { s.GracefulStop(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			s.Stop()
+		}
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = metricsSrv.Shutdown(shutdownCtx)
+	}()
+
+	logger.Info("token service starting", "grpc_port", grpcPort, "metrics_port", metricsPort)
+	if err := s.Serve(lis); err != nil {
+		logger.Error("gRPC server stopped", "error", err.Error())
+		os.Exit(1)
+	}
 }

@@ -1,6 +1,7 @@
 """Token Issuance Service - with observability"""
 import os, logging, grpc, psycopg2, uvicorn
 from fastapi import Depends, FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from opentelemetry import trace
 from opentelemetry._logs import set_logger_provider
@@ -88,10 +89,40 @@ db = ConnectionPool(
     statement_timeout_ms=int(os.getenv("DB_STATEMENT_TIMEOUT_MS", "2000")),
 )
 GRPC_HOST = os.getenv("TOKEN_SERVICE_HOST", "localhost:50051")
+GRPC_TIMEOUT = float(os.getenv("GRPC_TIMEOUT_SECONDS", "2"))
+
+# One long-lived gRPC channel, shared by all requests (it reconnects by itself)
+grpc_channel = grpc.insecure_channel(GRPC_HOST)
+token_stub = token_pb2_grpc.TokenServiceStub(grpc_channel)
 
 @app.get("/health")
 def health():
     return {"status": "healthy"}
+
+
+@app.get("/livez")
+def livez():
+    """The process is up and answering. Kubernetes restarts the container if this fails."""
+    return {"status": "alive"}
+
+
+@app.get("/readyz")
+def readyz():
+    """Ready for traffic: the database answers and the token service is reachable.
+    While this fails, Kubernetes stops sending traffic here but leaves the container running."""
+    checks = {}
+    try:
+        checks["database"] = "ok" if db.ping() else "failed"
+    except Exception as exc:
+        checks["database"] = f"failed: {type(exc).__name__}"
+    try:
+        grpc.channel_ready_future(grpc_channel).result(timeout=1)
+        checks["token_service"] = "ok"
+    except grpc.FutureTimeoutError:
+        checks["token_service"] = "failed: unreachable"
+    ready = all(v == "ok" for v in checks.values())
+    return JSONResponse(status_code=200 if ready else 503,
+                        content={"status": "ready" if ready else "not ready", "checks": checks})
 
 @app.get("/faq")
 def faq():
@@ -118,10 +149,12 @@ def request_token(req: TokenRequest, caller: Caller = Depends(require_caller)):
         logger.info(f"User not found: {req.user_email}")
         raise HTTPException(status_code=404, detail="User not found")
 
-    channel = grpc.insecure_channel(GRPC_HOST)
-    stub = token_pb2_grpc.TokenServiceStub(channel)
-    resp = stub.MintToken(token_pb2.MintTokenRequest(
-        user_email=req.user_email, permissions=row[0], ttl_seconds=3600))
+    try:
+        resp = token_stub.MintToken(token_pb2.MintTokenRequest(
+            user_email=req.user_email, permissions=row[0], ttl_seconds=3600), timeout=GRPC_TIMEOUT)
+    except grpc.RpcError as exc:
+        logger.error("token service call failed", extra={"grpc_code": exc.code().name, "client_id": caller.client_id})
+        raise HTTPException(status_code=503, detail="Token service unavailable")
 
     logger.info(f"Token issued for {req.user_email}")
     return {"token": resp.token, "permissions": row[0]}
