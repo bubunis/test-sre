@@ -149,12 +149,15 @@ func (s *server) MintToken(ctx context.Context, req *pb.MintTokenRequest) (*pb.M
 	if err := s.rdb.Set(ctx, "token:"+token, req.UserEmail, ttl).Err(); err != nil {
 		tokensTotal.WithLabelValues("error").Inc()
 		logger.ErrorContext(ctx, "redis error", "error", err.Error())
-		return nil, err
+		return nil, status.Error(codes.Unavailable, "token store unavailable")
 	}
 
 	tokensTotal.WithLabelValues("success").Inc()
 	mintLatency.Observe(time.Since(start).Seconds())
 	logger.InfoContext(ctx, "token minted", "user", req.UserEmail)
+
+	// Audit event on the Redis Stream queue (see queue.go); never stores the raw email
+	enqueueTokenEvent(ctx, s.rdb, userRef(req.UserEmail), ttl)
 	return &pb.MintTokenResponse{Token: token}, nil
 }
 
@@ -198,6 +201,11 @@ func main() {
 		panic(err)
 	}
 
+	// Token-event queue: background worker plus queue-size metrics (see queue.go)
+	consumer, _ := os.Hostname()
+	go runTokenEventWorker(context.Background(), rdb, consumer)
+	go pollTokenEventQueue(context.Background(), rdb)
+
 	// Metrics endpoint
 	go func() {
 		http.Handle("/metrics", promhttp.Handler())
@@ -211,7 +219,10 @@ func main() {
 		logger.Error("Failed to bind to port 50051. Is another process using it?", "error", err)
 	}
 	// gRPC server with OpenTelemetry auto-instrumentation
-	s := grpc.NewServer(grpc.StatsHandler(otelgrpc.NewServerHandler()))
+	s := grpc.NewServer(
+		grpc.StatsHandler(otelgrpc.NewServerHandler()),
+		grpc.ChainUnaryInterceptor(metricsInterceptor), // RED metrics, see grpc_metrics.go
+	)
 	pb.RegisterTokenServiceServer(s, &server{rdb: rdb})
 
 	logger.Info("token service starting", "grpc_port", 50051, "metrics_port", 9090)
