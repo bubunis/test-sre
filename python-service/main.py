@@ -18,6 +18,7 @@ from opentelemetry.instrumentation.psycopg2 import Psycopg2Instrumentor
 from prometheus_fastapi_instrumentator import Instrumentator
 import token_pb2, token_pb2_grpc
 import log_setup
+from db_pool import ConnectionPool, PoolTimeout
 from auth import Caller, configure_auth, require_caller
 
 # Set W3C Trace Context propagator for cross-service trace correlation
@@ -77,6 +78,15 @@ def _read_secret(path_env: str) -> str:
 
 
 DB_PASSWORD = _read_secret("DB_PASSWORD_FILE")
+
+# One shared connection pool instead of a new connection per request (metrics: db_pool_*)
+db = ConnectionPool(
+    DB_URL, DB_PASSWORD,
+    minconn=int(os.getenv("DB_POOL_MIN", "2")),
+    maxconn=int(os.getenv("DB_POOL_MAX", "10")),
+    acquire_timeout=float(os.getenv("DB_POOL_TIMEOUT_SECONDS", "2")),
+    statement_timeout_ms=int(os.getenv("DB_STATEMENT_TIMEOUT_MS", "2000")),
+)
 GRPC_HOST = os.getenv("TOKEN_SERVICE_HOST", "localhost:50051")
 
 @app.get("/health")
@@ -93,16 +103,16 @@ def request_token(req: TokenRequest, caller: Caller = Depends(require_caller)):
     trace.get_current_span().set_attribute("app.client_id", caller.client_id)
     logger.info(f"Token request for {req.user_email}", extra={"client_id": caller.client_id})
 
-    conn = psycopg2.connect(DB_URL, password=DB_PASSWORD)
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT ARRAY_AGG(DISTINCT gp.permission)
-        FROM users u JOIN memberships m ON u.id = m.user_id
-        JOIN group_permissions gp ON m.group_id = gp.group_id
-        WHERE u.email = %s
-    """, (req.user_email,))
-    row = cur.fetchone()
-    conn.close()
+    try:
+        row = db.fetchone("user_permissions", """
+            SELECT ARRAY_AGG(DISTINCT gp.permission)
+            FROM users u JOIN memberships m ON u.id = m.user_id
+            JOIN group_permissions gp ON m.group_id = gp.group_id
+            WHERE u.email = %s
+        """, (req.user_email,))
+    except PoolTimeout:
+        logger.warning("database pool exhausted", extra={"client_id": caller.client_id})
+        raise HTTPException(status_code=503, detail="Service busy, try again")
 
     if not row or not row[0]:
         logger.info(f"User not found: {req.user_email}")
