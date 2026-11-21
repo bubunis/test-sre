@@ -115,6 +115,7 @@ services:
       - REDIS_ADDR=redis:6379
       - REDIS_PASSWORD_FILE=/run/secrets/redis_password
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4317
+      - TOKEN_EVENT_WORK_MS=${TOKEN_EVENT_WORK_MS:-0}
     secrets:
       - redis_password
     depends_on:
