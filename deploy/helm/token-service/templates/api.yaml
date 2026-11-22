@@ -1,0 +1,119 @@
+{{- $c := dict "root" . "component" "api" -}}
+{{- $v := .Values.api -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ts.name" $c }}
+  labels:
+    {{- include "ts.labels" $c | nindent 4 }}
+spec:
+  replicas: {{ $v.replicas }}
+  revisionHistoryLimit: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0   # never drop below the desired count during a rollout
+      maxSurge: 1
+  selector:
+    matchLabels:
+      {{- include "ts.selector" $c | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ts.labels" $c | nindent 8 }}
+      annotations:
+        # restart pods when the settings change
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      automountServiceAccountToken: false   # the app never talks to the Kubernetes API
+      {{- include "ts.spread" $c | nindent 6 }}
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        {{- include "ts.podSecurity" (dict "root" . "uid" $v.uid) | nindent 8 }}
+      containers:
+        - name: api
+          image: "{{ $v.image.repository }}:{{ $v.image.tag }}"
+          imagePullPolicy: {{ $v.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ $v.port }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "ts.name" $c }}
+          volumeMounts:
+            - name: db-secret
+              mountPath: /etc/secrets/db
+              readOnly: true
+            - name: jwt-secret
+              mountPath: /etc/secrets/jwt
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          # started at all? give imports + first connections up to 60s
+          startupProbe:
+            httpGet: { path: /livez, port: http }
+            periodSeconds: 2
+            failureThreshold: 30
+          # process stuck -> restart it
+          livenessProbe:
+            httpGet: { path: /livez, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          # database or Go service unreachable -> stop sending traffic, don't restart
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          lifecycle:
+            # give kube-proxy time to drop this pod from the Service before SIGTERM
+            preStop:
+              exec:
+                command: ["python", "-c", "import time; time.sleep(5)"]
+          resources:
+            {{- toYaml $v.resources | nindent 12 }}
+          securityContext:
+            {{- include "ts.containerSecurity" . | nindent 12 }}
+      volumes:
+        - name: db-secret
+          secret:
+            secretName: {{ .Values.existingSecrets.db }}
+            defaultMode: 0440
+        - name: jwt-secret
+          secret:
+            secretName: {{ .Values.existingSecrets.jwt }}
+            defaultMode: 0440
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ts.name" $c }}
+  labels:
+    {{- include "ts.labels" $c | nindent 4 }}
+spec:
+  type: {{ $v.service.type }}
+  selector:
+    {{- include "ts.selector" $c | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ $v.port }}
+      targetPort: http
+      {{- if eq $v.service.type "NodePort" }}
+      nodePort: {{ $v.service.nodePort }}
+      {{- end }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "ts.name" $c }}
+  labels:
+    {{- include "ts.labels" $c | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "ts.selector" $c | nindent 6 }}

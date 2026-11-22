@@ -1,0 +1,89 @@
+# Defaults for a local kind cluster. Secrets are NOT in this file:
+# deploy/kind/up.sh creates them from ./secrets before installing the chart.
+
+# Names of Secrets / ConfigMaps created outside the chart.
+# Each workload mounts only the Secret it needs.
+existingSecrets:
+  db: token-db            # key: password
+  redis: token-redis      # keys: password, redis.conf
+  jwt: token-jwt          # key: public.pem
+dbInitConfigMap: token-db-init   # key: init.sql (database/init.sql)
+
+# Shared settings for every pod
+podSecurity:
+  seccompProfile: RuntimeDefault
+
+# Spread API and Go pods over zones (kind: one worker per zone) and nodes.
+# DoNotSchedule = refuse to stack both replicas in one zone (production behaviour).
+# Set to ScheduleAnyway on a single-node cluster.
+topologySpread:
+  enabled: true
+  whenUnsatisfiable: DoNotSchedule
+
+otel:
+  # Empty = no OTLP export (logs still go to stdout as JSON). PR 6 sets this.
+  endpoint: ""
+
+api:
+  image:
+    repository: token-api
+    tag: dev
+    pullPolicy: IfNotPresent
+  replicas: 2
+  uid: 10001
+  port: 8000
+  service:
+    type: NodePort
+    nodePort: 30080       # kind maps this to 127.0.0.1:8080 on the Mac
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits:   { cpu: 500m, memory: 256Mi }
+  config:
+    DB_POOL_MIN: "2"
+    DB_POOL_MAX: "10"
+    DB_POOL_TIMEOUT_SECONDS: "2"
+    DB_STATEMENT_TIMEOUT_MS: "2000"
+    GRPC_TIMEOUT_SECONDS: "2"
+    # DEV identity provider (the dev key pair). In production set JWT_JWKS_URL
+    # and drop the jwt Secret.
+    JWT_ISSUER: https://idp.dev.local
+    JWT_AUDIENCE: token-service
+    JWT_ALGORITHMS: ES256
+    JWT_REQUIRED_SCOPE: token:mint
+    JWT_LEEWAY_SECONDS: "30"
+
+grpc:
+  image:
+    repository: token-grpc
+    tag: dev
+    pullPolicy: IfNotPresent
+  replicas: 2             # both pods share the Redis queue through the consumer group
+  uid: 65532
+  port: 50051
+  metricsPort: 9090
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits:   { cpu: 250m, memory: 128Mi }
+  config:
+    TOKEN_EVENT_WORK_MS: "0"
+
+postgres:
+  image: postgres:15-alpine
+  uid: 70                 # "postgres" user in the alpine image
+  database: tokendb
+  user: postgres
+  storage: 1Gi
+  storageClass: ""        # empty = cluster default (kind: "standard")
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits:   { cpu: 500m, memory: 512Mi }
+
+redis:
+  image: redis:7-alpine
+  uid: 999                # "redis" user in the alpine image
+  gid: 1000
+  # Redis holds short-lived tokens and the event stream; emptyDir is fine for
+  # the demo. Use a PVC (or a managed Redis) if tokens must survive a restart.
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits:   { cpu: 250m, memory: 256Mi }

@@ -1,0 +1,114 @@
+{{- $c := dict "root" . "component" "postgres" -}}
+{{- $v := .Values.postgres -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "ts.name" $c }}
+  labels:
+    {{- include "ts.labels" $c | nindent 4 }}
+spec:
+  serviceName: {{ include "ts.name" $c }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "ts.selector" $c | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ts.labels" $c | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60   # let Postgres finish a clean shutdown
+      securityContext:
+        {{- include "ts.podSecurity" (dict "root" . "uid" $v.uid) | nindent 8 }}
+      containers:
+        - name: postgres
+          image: {{ $v.image }}
+          ports:
+            - name: postgres
+              containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              value: {{ $v.user | quote }}
+            - name: POSTGRES_DB
+              value: {{ $v.database | quote }}
+            - name: POSTGRES_PASSWORD_FILE
+              value: /etc/secrets/db/password
+            # a subfolder, because the volume root may contain lost+found
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: db-secret
+              mountPath: /etc/secrets/db
+              readOnly: true
+            - name: init-sql
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+            - name: run
+              mountPath: /var/run/postgresql
+            - name: tmp
+              mountPath: /tmp
+          # first start runs initdb + init.sql; allow up to ~2.5 minutes
+          startupProbe:
+            exec:
+              command: ["pg_isready", "-h", "127.0.0.1", "-U", "{{ $v.user }}", "-d", "{{ $v.database }}"]
+            periodSeconds: 5
+            failureThreshold: 30
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-h", "127.0.0.1", "-U", "{{ $v.user }}", "-d", "{{ $v.database }}"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-h", "127.0.0.1", "-U", "{{ $v.user }}", "-d", "{{ $v.database }}"]
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          resources:
+            {{- toYaml $v.resources | nindent 12 }}
+          securityContext:
+            {{- include "ts.containerSecurity" . | nindent 12 }}
+      volumes:
+        - name: db-secret
+          secret:
+            secretName: {{ .Values.existingSecrets.db }}
+            defaultMode: 0440
+        - name: init-sql
+          configMap:
+            name: {{ .Values.dbInitConfigMap }}
+        - name: run
+          emptyDir: {}
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- with $v.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $v.storage }}
+---
+# Headless: gives the StatefulSet pod a stable DNS name; resolves only when ready
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ts.name" $c }}
+  labels:
+    {{- include "ts.labels" $c | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "ts.selector" $c | nindent 4 }}
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres

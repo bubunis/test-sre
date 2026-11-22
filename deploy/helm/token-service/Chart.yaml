@@ -1,0 +1,6 @@
+apiVersion: v2
+name: token-service
+description: Token service - Python API, Go token minter, PostgreSQL and Redis
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
