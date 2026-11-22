@@ -1,0 +1,38 @@
+# Plain settings only. Passwords and keys come from Secrets (mounted as files).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ts.name" (dict "root" . "component" "api") }}
+  labels:
+    {{- include "ts.labels" (dict "root" . "component" "api") | nindent 4 }}
+data:
+  # Service discovery is plain Kubernetes DNS: <service>.<namespace>.svc
+  DATABASE_URL: {{ printf "postgres://%s@%s:5432/%s" .Values.postgres.user (include "ts.name" (dict "root" . "component" "postgres")) .Values.postgres.database | quote }}
+  DB_PASSWORD_FILE: /etc/secrets/db/password
+  # dns:/// + a headless Service = the client sees every Go pod (see main.py)
+  TOKEN_SERVICE_HOST: {{ printf "dns:///%s:%v" (include "ts.name" (dict "root" . "component" "grpc")) .Values.grpc.port | quote }}
+  JWT_PUBLIC_KEY_FILE: /etc/secrets/jwt/public.pem
+  {{- with .Values.otel.endpoint }}
+  OTEL_EXPORTER_OTLP_ENDPOINT: {{ . | quote }}
+  {{- end }}
+  {{- range $k, $v := .Values.api.config }}
+  {{ $k }}: {{ $v | quote }}
+  {{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ts.name" (dict "root" . "component" "grpc") }}
+  labels:
+    {{- include "ts.labels" (dict "root" . "component" "grpc") | nindent 4 }}
+data:
+  REDIS_ADDR: {{ printf "%s:6379" (include "ts.name" (dict "root" . "component" "redis")) | quote }}
+  REDIS_PASSWORD_FILE: /etc/secrets/redis/password
+  GRPC_PORT: {{ .Values.grpc.port | quote }}
+  METRICS_PORT: {{ .Values.grpc.metricsPort | quote }}
+  {{- with .Values.otel.endpoint }}
+  OTEL_EXPORTER_OTLP_ENDPOINT: {{ . | quote }}
+  {{- end }}
+  {{- range $k, $v := .Values.grpc.config }}
+  {{ $k }}: {{ $v | quote }}
+  {{- end }}

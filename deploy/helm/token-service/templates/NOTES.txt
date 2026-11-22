@@ -1,0 +1,9 @@
+Token service installed in namespace {{ .Release.Namespace }}.
+
+  kubectl -n {{ .Release.Namespace }} get pods
+
+API (kind maps NodePort {{ .Values.api.service.nodePort }} to this machine):
+  curl http://127.0.0.1:8080/readyz
+
+Without kind's port mapping:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ .Release.Name }}-api 8080:{{ .Values.api.port }}

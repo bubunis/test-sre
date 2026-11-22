@@ -1,0 +1,106 @@
+{{- $c := dict "root" . "component" "grpc" -}}
+{{- $v := .Values.grpc -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ts.name" $c }}
+  labels:
+    {{- include "ts.labels" $c | nindent 4 }}
+spec:
+  replicas: {{ $v.replicas }}
+  revisionHistoryLimit: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      {{- include "ts.selector" $c | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ts.labels" $c | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      {{- include "ts.spread" $c | nindent 6 }}
+      terminationGracePeriodSeconds: 30   # main.go stops gracefully within 10s
+      securityContext:
+        {{- include "ts.podSecurity" (dict "root" . "uid" $v.uid) | nindent 8 }}
+      containers:
+        - name: grpc
+          image: "{{ $v.image.repository }}:{{ $v.image.tag }}"
+          imagePullPolicy: {{ $v.image.pullPolicy }}
+          ports:
+            - name: grpc
+              containerPort: {{ $v.port }}
+            - name: metrics
+              containerPort: {{ $v.metricsPort }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "ts.name" $c }}
+          volumeMounts:
+            - name: redis-secret
+              mountPath: /etc/secrets/redis
+              readOnly: true
+          # Native gRPC probes (grpc.health.v1, see health.go)
+          # "liveness" is SERVING while the process runs -> restart only if it hangs
+          livenessProbe:
+            grpc: { port: {{ $v.port }}, service: liveness }
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          # "" is SERVING only while Redis answers -> out of the Service, not restarted
+          readinessProbe:
+            grpc: { port: {{ $v.port }} }
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+          resources:
+            {{- toYaml $v.resources | nindent 12 }}
+          securityContext:
+            {{- include "ts.containerSecurity" . | nindent 12 }}
+      volumes:
+        - name: redis-secret
+          secret:
+            secretName: {{ .Values.existingSecrets.redis }}
+            defaultMode: 0440
+            items:
+              - key: password      # the Go service gets the password, not redis.conf
+                path: password
+---
+# Headless: DNS returns every ready pod IP, so the Python client can
+# load-balance gRPC calls itself (round_robin). A normal ClusterIP would
+# balance connections, and gRPC keeps one connection open for a long time.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ts.name" $c }}
+  labels:
+    {{- include "ts.labels" $c | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "ts.selector" $c | nindent 4 }}
+  ports:
+    - name: grpc
+      port: {{ $v.port }}
+      targetPort: grpc
+      appProtocol: grpc
+    - name: metrics
+      port: {{ $v.metricsPort }}
+      targetPort: metrics
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "ts.name" $c }}
+  labels:
+    {{- include "ts.labels" $c | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "ts.selector" $c | nindent 6 }}
