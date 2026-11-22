@@ -1,0 +1,76 @@
+{{- $c := dict "root" . "component" "redis" -}}
+{{- $v := .Values.redis -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "ts.name" $c }}
+  labels:
+    {{- include "ts.labels" $c | nindent 4 }}
+spec:
+  serviceName: {{ include "ts.name" $c }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "ts.selector" $c | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ts.labels" $c | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        {{- include "ts.podSecurity" (dict "root" . "uid" $v.uid "gid" $v.gid) | nindent 8 }}
+      containers:
+        - name: redis
+          image: {{ $v.image }}
+          # requirepass lives in the mounted config file, never on the command line
+          command: ["redis-server", "/etc/secrets/redis/redis.conf"]
+          ports:
+            - name: redis
+              containerPort: 6379
+          volumeMounts:
+            - name: redis-secret
+              mountPath: /etc/secrets/redis
+              readOnly: true
+            - name: data
+              mountPath: /data
+          livenessProbe:
+            tcpSocket: { port: redis }
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - REDISCLI_AUTH="$(cat /etc/secrets/redis/password)" redis-cli ping | grep -q PONG
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          resources:
+            {{- toYaml $v.resources | nindent 12 }}
+          securityContext:
+            {{- include "ts.containerSecurity" . | nindent 12 }}
+      volumes:
+        - name: redis-secret
+          secret:
+            secretName: {{ .Values.existingSecrets.redis }}
+            defaultMode: 0440
+        - name: data
+          emptyDir:
+            sizeLimit: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ts.name" $c }}
+  labels:
+    {{- include "ts.labels" $c | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "ts.selector" $c | nindent 4 }}
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
