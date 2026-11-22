@@ -1,0 +1,55 @@
+name: Kubernetes (kind)
+
+# Same scripts as on a laptop: deploy/kind/{install-tools,up,smoke,debug,down}.sh
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: k8s-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  kind-e2e:
+    name: kind e2e (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # amd64 always; arm64 (same CPU family as Apple Silicon) where GitHub
+        # offers it for free, i.e. public repositories
+        runner: ${{ github.event.repository.private && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest", "ubuntu-24.04-arm"]') }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Create secrets
+        run: bash scripts/init-secrets.sh
+
+      - name: Install kind, kubectl, helm (pinned, checksum-verified)
+        run: ./deploy/kind/install-tools.sh
+
+      - name: Lint and render the chart
+        run: |
+          helm lint deploy/helm/token-service
+          helm template token-service deploy/helm/token-service > /dev/null
+
+      - name: Create cluster, build, deploy
+        run: ./deploy/kind/up.sh
+
+      - name: Smoke, security and resilience checks
+        run: CHAOS=1 ./deploy/kind/smoke.sh
+
+      - name: Diagnostics (on failure)
+        if: failure()
+        run: ./deploy/kind/debug.sh
+
+      - name: Delete cluster
+        if: always()
+        run: ./deploy/kind/down.sh || true
