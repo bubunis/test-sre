@@ -1,0 +1,70 @@
+# OpenTelemetry collector: the one place apps send traces and logs.
+#   traces -> Tempo      logs -> Loki (native OTLP)
+fullnameOverride: otel-collector
+mode: deployment
+replicaCount: 1
+
+# The Kubernetes distribution: has the transform and k8sattributes processors
+image:
+  repository: otel/opentelemetry-collector-k8s
+command:
+  name: otelcol-k8s
+
+# Adds k8s.namespace.name, k8s.pod.name, k8s.node.name ... to every span and
+# log line (looked up from the sender's pod IP). Creates a read-only ClusterRole.
+presets:
+  kubernetesAttributes:
+    enabled: true
+
+resources:
+  requests: { cpu: 50m, memory: 128Mi }
+  limits:   { memory: 320Mi }
+
+# Only OTLP ports on the Service
+ports:
+  jaeger-compact: { enabled: false }
+  jaeger-thrift: { enabled: false }
+  jaeger-grpc: { enabled: false }
+  zipkin: { enabled: false }
+
+config:
+  receivers:
+    jaeger: null
+    zipkin: null
+    prometheus: null
+    otlp:
+      protocols:
+        grpc: { endpoint: "${env:MY_POD_IP}:4317" }
+        http: { endpoint: "${env:MY_POD_IP}:4318" }
+  processors:
+    memory_limiter:
+      check_interval: 1s
+      limit_mib: 256
+      spike_limit_mib: 64
+    # Same masking as Docker Compose: no email address reaches Loki
+    transform/redact-pii:
+      error_mode: ignore
+      log_statements:
+        - context: log
+          statements:
+            - replace_pattern(body, "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}", "[email]")
+            - replace_all_patterns(attributes, "value", "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}", "[email]")
+    batch: {}
+  exporters:
+    otlp/tempo:
+      endpoint: tempo.observability.svc:4317
+      tls:
+        insecure: true      # in-cluster; mTLS is a later step
+    otlphttp/loki:
+      endpoint: http://loki.observability.svc:3100/otlp
+  service:
+    pipelines:
+      metrics: null         # metrics are scraped by Prometheus, not pushed
+      traces:
+        receivers: [otlp]
+        processors: [memory_limiter, batch]   # the preset adds k8sattributes
+        exporters: [otlp/tempo]
+      logs:
+        receivers: [otlp]
+        processors: [memory_limiter, transform/redact-pii, batch]
+        exporters: [otlphttp/loki]
