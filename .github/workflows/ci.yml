@@ -200,7 +200,7 @@ jobs:
       working-directory: python-service
       run: |
         uv export --frozen --no-dev --no-hashes --format requirements-txt > /tmp/requirements.txt
-        uvx pip-audit==2.7.3 -r /tmp/requirements.txt --disable-pip
+        uvx pip-audit==2.7.3 -r /tmp/requirements.txt --disable-pip --no-deps
 
     - name: Create secrets (needed to build)
       run: bash scripts/init-secrets.sh
