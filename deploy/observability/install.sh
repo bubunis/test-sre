@@ -52,4 +52,8 @@ install tempo          grafana-community/tempo                    "$TEMPO_VERSIO
 install otel-collector open-telemetry/opentelemetry-collector     "$OTEL_COLLECTOR_VERSION" "$V/otel-collector.yaml"
 install kps            prometheus-community/kube-prometheus-stack "$KPS_VERSION"            "$V/kube-prometheus-stack.yaml"
 
+# Lock down who can reach Loki, Tempo and the collector
+kubectl -n "$NS" apply -f deploy/observability/networkpolicies.yaml >/dev/null
+echo "network policies applied"
+
 kubectl -n "$NS" get pods

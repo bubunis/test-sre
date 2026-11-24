@@ -6,6 +6,14 @@ on:
   pull_request:
     branches: [ "main" ]
 
+# The workflow only reads the repo; nothing it runs can push or change settings
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # JOB 1: Build Validation (Fail Fast)
   build-images:
@@ -52,7 +60,12 @@ jobs:
     - name: Boot up ephemeral environment
       run: |
         docker compose up -d --build
-        sleep 15
+        # wait until the API is ready (database and Go service answer), at most 2 minutes
+        for i in $(seq 1 60); do
+          curl -sf http://localhost:8000/readyz >/dev/null && { echo "ready after $((i*2)) s"; exit 0; }
+          sleep 2
+        done
+        echo "API not ready after 120 s"; docker compose ps; exit 1
 
     - name: Verify Python API Health
       run: curl -f http://localhost:8000/health
@@ -88,7 +101,12 @@ jobs:
     - name: Boot up ephemeral environment
       run: |
         docker compose up -d --build
-        sleep 15
+        # wait until the API is ready (database and Go service answer), at most 2 minutes
+        for i in $(seq 1 60); do
+          curl -sf http://localhost:8000/readyz >/dev/null && { echo "ready after $((i*2)) s"; exit 0; }
+          sleep 2
+        done
+        echo "API not ready after 120 s"; docker compose ps; exit 1
 
     - name: Integration Test - Callers without a valid JWT are refused
       run: |
@@ -113,7 +131,8 @@ jobs:
           -H "Content-Type: application/json" \
           -d '{"user_email": "alice@example.com"}')
           
-        echo "API Response: $RESPONSE"
+        # don't print the response: it contains a live token
+        echo "API answered with $(echo "$RESPONSE" | jq -r '.permissions | length') permissions"
         
         TOKEN=$(echo $RESPONSE | jq -r .token)
         PERMISSIONS=$(echo $RESPONSE | jq -r '.permissions | join(",")')
@@ -132,10 +151,9 @@ jobs:
 
     - name: Integration Test - Verify Redis Storage
       run: |
-        echo "Checking if Golang successfully stored Token $TOKEN in Redis..."
+        echo "Checking that the Go service stored the token in Redis..."
         
         REDIS_VAL=$(docker compose exec -T -e REDISCLI_AUTH="$(cat secrets/redis_password.txt)" redis redis-cli GET "token:${{ env.TOKEN }}")
-        echo "Redis Value: $REDIS_VAL"
         
         if [[ "$REDIS_VAL" != *"alice@example.com"* ]]; then
           echo "ERROR: Token payload not found in Redis!"
@@ -150,3 +168,47 @@ jobs:
     - name: Tear down environment
       if: always()
       run: docker compose down
+
+  # JOB 4: Supply-chain and secret scans
+  security-scans:
+    name: Security Scans
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code (full history, for the secret scan)
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Secrets in git history (gitleaks)
+      run: docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.21.2 git /repo --redact --verbose
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: golang-service/go.mod
+
+    - name: Go vulnerabilities (govulncheck)
+      working-directory: golang-service
+      run: |
+        go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+        "$(go env GOPATH)/bin/govulncheck" ./...
+
+    - name: Set up uv
+      uses: astral-sh/setup-uv@v5
+
+    - name: Python vulnerabilities (pip-audit)
+      working-directory: python-service
+      run: |
+        uv export --frozen --no-dev --no-hashes --format requirements-txt > /tmp/requirements.txt
+        uvx pip-audit==2.7.3 -r /tmp/requirements.txt --disable-pip --no-deps
+
+    - name: Create secrets (needed to build)
+      run: bash scripts/init-secrets.sh
+
+    - name: Image vulnerabilities (trivy, report only for now)
+      run: |
+        docker compose build golang-service python-service
+        for img in $(docker compose config --images | grep -E 'golang-service|python-service'); do
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:0.57.1 \
+            image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 0 "$img"
+        done

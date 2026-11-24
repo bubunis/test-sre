@@ -22,14 +22,27 @@ deploy/
 │   ├── install-tools.sh    # pinned kind/kubectl/helm for this OS + CPU, checksum-verified
 │   ├── up.sh               # build, load images, create secrets, helm install
 │   ├── smoke.sh            # e2e + security checks (CHAOS=1: Redis outage too)
+│   ├── policy-check.sh     # network policies, HPAs, Argo CD sync and self-heal
+│   ├── load.sh             # steady load, to watch the HPAs scale
 │   ├── debug.sh            # pods, events, logs when something is stuck
 │   └── down.sh             # delete the cluster
+├── platform/
+│   ├── versions.env        # pinned metrics-server chart
+│   ├── values/
+│   └── install.sh          # metrics-server (plain mode; Argo CD installs it in GitOps mode)
+├── gitops/
+│   ├── versions.env        # pinned Argo CD chart
+│   ├── argocd-values.yaml
+│   ├── bootstrap.sh        # Argo CD + secrets + the root Application
+│   ├── apps/               # app of apps: one Application per component, with sync waves
+│   └── observability-config/  # kustomize: dashboards ConfigMap + network policies
 ├── observability/
 │   ├── versions.env        # pinned chart versions
 │   ├── values/             # kube-prometheus-stack, loki, tempo, otel-collector
 │   ├── render.sh           # render all four charts offline (catches value mistakes)
 │   ├── install.sh          # namespace, Grafana login, dashboards, helm installs
-│   ├── check.sh            # metrics, logs, traces, dashboards end to end
+│   ├── check.sh            # metrics, logs, traces, dashboards, SLO rules end to end
+│   ├── networkpolicies.yaml # who may reach Loki, Tempo and the collector
 │   └── ui.sh               # Grafana :3000, Prometheus :9091, Alertmanager :9093
 └── helm/token-service/
     ├── values.yaml         # replicas, resources, settings (no secrets)
@@ -39,6 +52,9 @@ deploy/
         ├── grpc.yaml       # Deployment + headless Service + PDB
         ├── postgres.yaml   # StatefulSet + PVC + headless Service
         ├── redis.yaml      # StatefulSet + headless Service
+        ├── networkpolicy.yaml   # default deny + exactly the paths each workload needs
+        ├── hpa.yaml        # CPU autoscaling for the API and the Go service
+        ├── prometheusrule.yaml  # SLO recording rules and burn-rate alerts
         └── servicemonitor.yaml  # Prometheus scrape config (when the CRD exists)
 ```
 
@@ -50,6 +66,8 @@ docker compose down            # free up CPU/memory
 ./deploy/kind/up.sh            # ~3-5 min the first time
 ./deploy/kind/smoke.sh         # CHAOS=1 adds a Redis outage and a node drain
 ./deploy/observability/check.sh
+./deploy/kind/policy-check.sh  # network policies, HPAs (and Argo CD, in GitOps mode)
+./deploy/kind/load.sh          # optional: watch the HPAs scale (kubectl -n token-service get hpa -w)
 ./deploy/observability/ui.sh   # Grafana on http://127.0.0.1:3000
 ./deploy/kind/down.sh          # when done
 ```
@@ -104,12 +122,78 @@ Grafana ──▶ Prometheus, Loki, Tempo   (same 6 dashboards and data source U
 - Grafana's password comes from `secrets/grafana_admin_password.txt`. Anonymous access and sign-up are off, and the UIs are reached only through `kubectl port-forward` on 127.0.0.1.
 - The namespace enforces the `baseline` Pod Security level (and warns on `restricted`): these third-party charts don't all set every restricted field.
 
+## Network policies
+
+Who may talk to whom (everything else is dropped):
+
+| To | From | Port |
+| --- | --- | --- |
+| API | anyone (clients, Prometheus) | 8000 |
+| Go service | API pods only | 50051 |
+| Go service metrics | Prometheus only | 9090 |
+| Postgres | API pods only | 5432 |
+| Redis | Go service pods only | 6379 |
+| OTel collector | pods in `token-service` | 4317/4318 |
+| Loki / Tempo | collector and Grafana | 3100 / 4317, 3200 |
+
+Outgoing traffic is limited too: the API may only reach Postgres, the Go service, the collector and DNS; the Go service only Redis, the collector and DNS; Postgres and Redis nothing. A token can't be minted by calling the Go service directly any more (`policy-check.sh` proves it, with the real API pod as the control).
+
+Kubelet probes and `kubectl port-forward` come from the pod's own node, which Kubernetes always allows.
+
+## GitOps with Argo CD
+
+`up.sh` has two modes:
+
+- **Plain** (default): `up.sh` runs `helm upgrade --install` for everything. Fast, works offline, good while changing things.
+- **GitOps** (`GITOPS=1 ./deploy/kind/up.sh`): `up.sh` only builds and loads the images and creates the secrets, then `deploy/gitops/bootstrap.sh` installs Argo CD and one root Application. Argo CD installs everything else from GitHub and keeps it there. CI uses this mode, on the exact commit under test.
+
+```text
+root Application "token-platform"  (applied by bootstrap.sh: repo, branch, image tag)
+  └─ deploy/gitops/apps  (Helm chart, "app of apps")
+       wave -3  AppProject token-platform   (allowed repos and namespaces)
+       wave -2  metrics-server, observability-config (dashboards + network policies)
+       wave -1  loki, tempo, otel-collector, kube-prometheus-stack
+       wave  0  token-service  (this repo's chart; needs the Prometheus CRDs from wave -1)
+```
+
+Every Application has automated sync with `prune` (deleted from git → deleted from the cluster) and `selfHeal` (changed by hand → changed back). `policy-check.sh` proves it: it deletes the Go service's NetworkPolicy and waits for Argo CD to restore it.
+
+Try it:
+
+```bash
+git push -u origin "$(git branch --show-current)"   # Argo CD reads GitHub, not your disk
+export GIT_TOKEN=<fine-grained token, read-only Contents>   # only if the repo is private
+GITOPS=1 ./deploy/kind/up.sh
+./deploy/observability/ui.sh                         # Argo CD on https://127.0.0.1:8443
+# change something in git, e.g. api.autoscaling.maxReplicas in deploy/helm/token-service/values.yaml,
+# commit and push: Argo CD applies it within about a minute
+```
+
+What stays outside git, on purpose:
+
+- **Secrets.** `bootstrap.sh` creates them from `secrets/`. In production: External Secrets (from Vault or a cloud secret manager) or Sealed Secrets, so they can be in git encrypted.
+- **The image tag.** kind gets locally built images, so the tag is passed to the root Application. In production CI would push the image to a registry and commit the new tag (or Argo CD Image Updater would), so git always says what runs.
+- **Argo CD itself.** Installed once with Helm. It could manage itself as one more Application.
+
+## Autoscaling
+
+Both Deployments have an HPA on CPU (70% of the request): API 2–5 pods, Go service 2–4. metrics-server provides the numbers (with `--kubelet-insecure-tls`, needed only because kind's kubelets have self-signed certificates). Scale-up is immediate, scale-down waits 3 minutes. Five API pods × 10 database connections = 50, the `token_api` connection limit.
+
+## SLOs and alerts
+
+| SLO | Target | Alert |
+| --- | --- | --- |
+| Availability of `POST /token` (no 5xx) | 99.5% over 30 days | fast burn (14.4× over 1 h and 5 m) and slow burn (6× over 6 h and 30 m), both critical |
+| Latency of `POST /token` | 95% under 0.5 s | 14.4× burn over 1 h and 5 m, warning |
+
+Plus dependency alerts: Go service or API not scraped, DB pool over 90%, audit queue over 100 events, events stuck unacknowledged for 15 minutes, a client hitting the rate limit. Rules live in `templates/prometheusrule.yaml`; see them in Prometheus (`:9091/alerts`) or Grafana → Alerting. No receiver is set up, so they show but don't notify.
+
 ## Why only 3 nodes
 
-Three kind nodes take ~1.5 GB before any app pod; app + observability bring it to ~5 GB. That fits a laptop (give Docker 4 CPUs / 8 GB) and a GitHub runner (4 CPUs / 16 GB). Production would add a 3-node control plane and 3 zones; with two zones a quorum-based system (etcd, Redis Sentinel) can't survive losing one, so I kept stateful parts single and said so.
+Three kind nodes take ~1.5 GB before any app pod; app + observability bring it to ~5 GB, and Argo CD adds ~0.5 GB in GitOps mode. That fits a laptop (give Docker 4 CPUs / 8 GB) and a GitHub runner (4 CPUs / 16 GB). Production would add a 3-node control plane and 3 zones; with two zones a quorum-based system (etcd, Redis Sentinel) can't survive losing one, so I kept stateful parts single and said so.
 
 Postgres stays on the node that holds its volume (local storage, like a zonal disk), so the drain test drains the *other* worker.
 
 ## Not here yet
 
-NetworkPolicies, HPA and SLO alerts (PR 7). Postgres and Redis are single pods; in production I'd use a managed database or an operator (CloudNativePG, Redis Sentinel).
+mTLS between the API and the Go service (the NetworkPolicy closes the hole; mTLS would also prove identity). Alert routing to a pager. Postgres and Redis are single pods; in production I'd use a managed database or an operator (CloudNativePG, Redis Sentinel).

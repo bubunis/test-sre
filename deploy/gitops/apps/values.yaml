@@ -1,0 +1,13 @@
+# Set by deploy/gitops/bootstrap.sh on the root Application:
+repoURL: ""           # this git repository (https)
+targetRevision: main  # branch or commit Argo CD follows
+imageTag: dev         # tag of the images loaded into kind (CI: the commit)
+
+# Third-party charts. Keep in step with deploy/observability/versions.env and
+# deploy/platform/versions.env (render.sh checks that they match).
+charts:
+  metricsServer: { repo: https://kubernetes-sigs.github.io/metrics-server/, chart: metrics-server, version: 3.13.1 }
+  loki:          { repo: https://grafana-community.github.io/helm-charts, chart: loki, version: 21.1.0 }
+  tempo:         { repo: https://grafana-community.github.io/helm-charts, chart: tempo, version: 1.26.4 }
+  otelCollector: { repo: https://open-telemetry.github.io/opentelemetry-helm-charts, chart: opentelemetry-collector, version: 0.180.0 }
+  kps:           { repo: https://prometheus-community.github.io/helm-charts, chart: kube-prometheus-stack, version: 87.19.0 }

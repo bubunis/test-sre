@@ -105,3 +105,19 @@ def test_uvicorn_logs_are_routed_through_json(logs):
     uv.info('%s - "%s %s HTTP/%s" %d', "127.0.0.1:5000", "POST", "/token", "1.1", 401)
     assert uv.handlers == [] and uv.propagate
     assert any('"POST /token HTTP/1.1" 401' in l["message"] for l in lines(out))
+
+
+def test_huge_input_is_cut_and_fast():
+    import time
+    t = time.perf_counter()
+    out = log_setup.redact("a." * 500_000)            # 1 MB, the worst case for the pattern
+    assert time.perf_counter() - t < 0.5
+    assert "truncated" in out
+    assert len(out) < log_setup.MAX_REDACT_CHARS + 50
+
+
+def test_address_at_the_cut_is_not_leaked():
+    n = log_setup.MAX_REDACT_CHARS
+    text = "x " * ((n - 10) // 2) + "alice@example.com" + " tail" * 100
+    out = log_setup.redact(text)
+    assert "alice" not in out and "example.com" not in out

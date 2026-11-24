@@ -2,7 +2,7 @@
 import os, logging, grpc, psycopg2, uvicorn
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from opentelemetry import trace
 from opentelemetry._logs import set_logger_provider
 from opentelemetry.sdk.trace import TracerProvider
@@ -21,6 +21,7 @@ import token_pb2, token_pb2_grpc
 import log_setup
 from db_pool import ConnectionPool, PoolTimeout
 from auth import Caller, configure_auth, require_caller
+from ratelimit import RateLimiter
 
 # Set W3C Trace Context propagator for cross-service trace correlation
 set_global_textmap(CompositePropagator([TraceContextTextMapPropagator()]))
@@ -59,9 +60,29 @@ GrpcInstrumentorClient().instrument()
 Psycopg2Instrumentor().instrument()
 
 class TokenRequest(BaseModel):
-    user_email: str
+    # 254 = the longest valid address (RFC 5321). The limit also keeps a huge
+    # body from reaching the logs and the database.
+    user_email: str = Field(min_length=3, max_length=254)
+
+    @field_validator("user_email")
+    @classmethod
+    def normalise(cls, v: str) -> str:
+        v = v.strip().lower()   # Alice@Example.com and alice@example.com are one user
+        if "@" not in v:
+            raise ValueError("not an email address")
+        return v
 
 app = FastAPI()
+
+# Added before the tracing middleware, so it runs inside the request's span
+@app.middleware("http")
+async def add_trace_id(request, call_next):
+    """Return the request's trace id, so a caller (or a demo) can find its trace and logs."""
+    response = await call_next(request)
+    ctx = trace.get_current_span().get_span_context()
+    if ctx.is_valid:
+        response.headers["X-Trace-Id"] = format(ctx.trace_id, "032x")
+    return response
 
 # Instrument FastAPI for automatic tracing
 FastAPIInstrumentor.instrument_app(app)
@@ -91,9 +112,26 @@ db = ConnectionPool(
 GRPC_HOST = os.getenv("TOKEN_SERVICE_HOST", "localhost:50051")
 GRPC_TIMEOUT = float(os.getenv("GRPC_TIMEOUT_SECONDS", "2"))
 
-# One long-lived gRPC channel, shared by all requests (it reconnects by itself)
-grpc_channel = grpc.insecure_channel(GRPC_HOST)
+# One long-lived gRPC channel, shared by all requests (it reconnects by itself).
+# On Kubernetes TOKEN_SERVICE_HOST is dns:///<headless service>:50051 and
+# round_robin spreads calls over every ready Go pod. With the default
+# (pick_first) one HTTP/2 connection would pin all calls to a single pod.
+grpc_channel = grpc.insecure_channel(
+    GRPC_HOST,
+    options=[
+        ("grpc.lb_policy_name", os.getenv("GRPC_LB_POLICY", "round_robin")),
+        # retry a lost Go service within seconds (the default backoff grows to 2 minutes)
+        ("grpc.max_reconnect_backoff_ms", 5000),
+    ],
+)
 token_stub = token_pb2_grpc.TokenServiceStub(grpc_channel)
+
+# Per calling service (JWT client id), per pod: protects Redis and the database
+# from one client minting in a loop. 0 turns it off.
+limiter = RateLimiter(
+    per_minute=int(os.getenv("RATE_LIMIT_PER_MINUTE", "600")),
+    burst=int(os.getenv("RATE_LIMIT_BURST", "60")),
+)
 
 @app.get("/health")
 def health():
@@ -132,6 +170,11 @@ def faq():
 def request_token(req: TokenRequest, caller: Caller = Depends(require_caller)):
     # Only reached when the caller's JWT is valid; caller.client_id says which service asked.
     trace.get_current_span().set_attribute("app.client_id", caller.client_id)
+    retry_after = limiter.check(caller.client_id)
+    if retry_after:
+        logger.warning("rate limit exceeded", extra={"client_id": caller.client_id})
+        raise HTTPException(status_code=429, detail="Too many requests",
+                            headers={"Retry-After": str(retry_after)})
     logger.info(f"Token request for {req.user_email}", extra={"client_id": caller.client_id})
 
     try:
@@ -144,6 +187,9 @@ def request_token(req: TokenRequest, caller: Caller = Depends(require_caller)):
     except PoolTimeout:
         logger.warning("database pool exhausted", extra={"client_id": caller.client_id})
         raise HTTPException(status_code=503, detail="Service busy, try again")
+    except psycopg2.Error as exc:   # Postgres down, connection lost, statement timeout
+        logger.error("database unavailable", extra={"error": type(exc).__name__, "client_id": caller.client_id})
+        raise HTTPException(status_code=503, detail="Database unavailable")
 
     if not row or not row[0]:
         logger.info(f"User not found: {req.user_email}")

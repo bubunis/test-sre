@@ -58,6 +58,11 @@ check "Redis queue depth metric"           prom_has 'token_events_queue_depth'
 check "queue processing time histogram"    prom_has 'token_event_processing_seconds_count'
 check "Kubernetes metrics (kube-state-metrics)" prom_has 'kube_deployment_status_replicas_available{namespace="token-service"}'
 
+slo_rules() { curl -s "$PROM/api/v1/rules" | grep -q 'token-service-slo.alerts'; }
+slo_recorded() { prom_has 'token:request_error_ratio:rate5m'; }
+check "SLO alert rules loaded"             retry 60 slo_rules
+check "SLO error ratio is being recorded"  retry 90 slo_recorded
+
 echo "Logs (Loki)"
 check "Python logs arrive"                 retry 60 loki_has '{service_name="python-token-service"}'
 check "Go logs arrive"                     retry 60 loki_has '{service_name="go-token-service"}'
@@ -65,19 +70,32 @@ check "logs carry trace_id"                retry 30 loki_has '{service_name="pyt
 check "logs carry the Kubernetes pod name" loki_has '{service_name="go-token-service", k8s_pod_name=~".+"}'
 check "no email address stored"            no_email_in_loki
 
-echo "Traces (Tempo)"
-TRACE_ID=""
-find_trace() {
-  TRACE_ID=$(curl -sG "$TEMPO/api/search" --data-urlencode 'q={resource.service.name="python-token-service" && name=~"POST.*"}' \
-               --data-urlencode limit=5 | grep -o '"traceID":"[0-9a-f]*"' | head -1 | cut -d'"' -f4)
-  [[ -n "$TRACE_ID" ]]
+echo "One request, end to end (Tempo + Loki)"
+# The API returns X-Trace-Id; follow that one request through traces and logs
+TRACE_ID=$(curl -s -D - -o /dev/null -X POST "$API/token" -H "Authorization: Bearer $JWT" \
+  -H "Content-Type: application/json" -d '{"user_email":"bob@example.com"}' \
+  | awk 'tolower($1)=="x-trace-id:" {print $2}' | tr -d '\r')
+check "API returns X-Trace-Id"             test -n "$TRACE_ID"
+echo "  trace id: $TRACE_ID"
+TRACE=""
+trace_complete() {  # all four parts appear in the trace (spans arrive in batches)
+  TRACE=$(curl -s "$TEMPO/api/traces/$TRACE_ID")
+  grep -q 'python-token-service' <<<"$TRACE" && grep -q 'go-token-service' <<<"$TRACE" \
+    && grep -qi 'postgresql' <<<"$TRACE" && grep -qi 'redis' <<<"$TRACE"
 }
-check "a /token trace is stored"           retry 60 find_trace
-TRACE=$(curl -s "$TEMPO/api/traces/$TRACE_ID")
+check "trace found in Tempo"               retry 60 bash -c "curl -sf '$TEMPO/api/traces/$TRACE_ID' >/dev/null"
+retry 60 trace_complete
 check "trace includes the Python API"      grep -q 'python-token-service' <<<"$TRACE"
+check "trace includes PostgreSQL"          grep -qi 'postgresql' <<<"$TRACE"
 check "trace includes the Go service"      grep -q 'go-token-service' <<<"$TRACE"
-check "trace includes PostgreSQL"          grep -qi 'postgresql\|tokendb' <<<"$TRACE"
 check "trace includes Redis"               grep -qi 'redis' <<<"$TRACE"
+check "trace includes the audit worker"    grep -q 'process token event' <<<"$TRACE"
+logs_for_trace() {  # $1 = service
+  loki_has "{service_name=\"$1\"} | trace_id=\"$TRACE_ID\""
+}
+check "Loki: API log lines for this request" retry 60 logs_for_trace python-token-service
+check "Loki: Go log lines for this request"  retry 60 logs_for_trace go-token-service
+echo "  Loki query: {service_name=~\"python-token-service|go-token-service\"} | trace_id=\"$TRACE_ID\""
 
 echo "Grafana"
 check "login works with the secret"        curl -sf -u "$GF_AUTH" "$GRAFANA/api/user"
