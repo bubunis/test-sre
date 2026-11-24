@@ -101,15 +101,18 @@ done
 echo "  (both should be > 0; an API pod that started before the 2nd Go pod picks it up within 2 min)"
 
 if [[ "${CHAOS:-0}" == 1 ]]; then
-  echo "Resilience: Redis goes away"
+  echo "Resilience: Redis stops answering"
   restarts() { k get pods -l app.kubernetes.io/name=grpc -o jsonpath='{range .items[*]}{.status.containerStatuses[0].restartCount}{" "}{end}'; }
   before=$(restarts)
-  k scale sts/token-service-redis --replicas=0 >/dev/null
-  check "Go pods become NOT ready"     k wait pod -l app.kubernetes.io/name=grpc --for=condition=Ready=false --timeout=60s
+  # Freeze Redis for 45 s instead of scaling it to 0: in GitOps mode Argo CD's
+  # self-heal would put the replica back within seconds, so the outage would never happen.
+  k exec sts/token-service-redis -- sh -c \
+    'REDISCLI_AUTH="$(cat /etc/secrets/redis/password)" redis-cli CLIENT PAUSE 45000 ALL' >/dev/null
+  check "Go pods become NOT ready"     k wait pod -l app.kubernetes.io/name=grpc --for=condition=Ready=false --timeout=40s
   check "/token -> 503 while Redis is down" test "$(code alice@example.com -H "Authorization: Bearer $JWT")" = 503
   check "Go pods were not restarted"   test "$(restarts)" = "$before"
-  k scale sts/token-service-redis --replicas=1 >/dev/null
-  check "Redis back"                   k rollout status sts/token-service-redis --timeout=90s
+  # the pause ends by itself
+  check "Redis back"                   k wait pod -l app.kubernetes.io/name=redis --for=condition=Ready --timeout=90s
   check "Go pods ready again"          k wait pod -l app.kubernetes.io/name=grpc --for=condition=Ready --timeout=60s
   check "/token works again"           eventually_200
 fi

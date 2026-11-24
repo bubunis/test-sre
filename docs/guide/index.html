@@ -298,18 +298,17 @@ histogram_quantile(0.95, sum by (le) (rate(token_event_processing_seconds_bucket
 <section class="mission" id="m6" data-title="Break something">
   <header><h2>Mission 6. Break something</h2><span class="time">6 minutes</span><span class="req">Production scenarios</span><label class="donebox"><input type="checkbox"> Done</label></header>
   <ol class="steps">
-    <li>Take Redis away and watch the Go pods.
-      <div class="cmd"><pre>kubectl -n token-service scale sts/token-service-redis --replicas=0
+    <li>Freeze Redis for a minute and watch the Go pods. (Pausing it, rather than scaling it to zero, also works in GitOps mode, where Argo CD would put a scaled-down replica straight back.)
+      <div class="cmd"><pre>kubectl -n token-service exec sts/token-service-redis -- sh -c \
+  'REDISCLI_AUTH="$(cat /etc/secrets/redis/password)" redis-cli CLIENT PAUSE 60000 ALL'
 kubectl -n token-service get pods -l app.kubernetes.io/name=grpc -w</pre></div>
       <div class="out"><span class="lbl">You should see</span><pre>token-service-grpc-…   0/1   Running   0   …      ← not ready, but RESTARTS stays 0</pre></div>
       On the Dependencies dashboard, mint errors and 5xx climb; <code>/token</code> answers <code>503</code> within the 2-second deadline.
     </li>
-    <li>Bring it back; everything recovers on its own.
-      <div class="cmd"><pre>kubectl -n token-service scale sts/token-service-redis --replicas=1</pre></div>
-    </li>
+    <li>After 60 seconds the pause ends and everything recovers on its own: Go pods ready again, <code>/token</code> back to 200.</li>
     <li>Or let the script do this and a node drain under load:
       <div class="cmd"><pre>CHAOS=1 ./deploy/kind/smoke.sh</pre></div>
-      <div class="out"><span class="lbl">You should see (part)</span><pre>Resilience: Redis goes away
+      <div class="out"><span class="lbl">You should see (part)</span><pre>Resilience: Redis stops answering
   PASS  Go pods become NOT ready
   PASS  /token -> 503 while Redis is down
   PASS  Go pods were not restarted
@@ -404,11 +403,11 @@ kubectl -n token-service get hpa token-service-api -w</pre></div>
     </li>
   </ol>
   <details><summary>Challenge: make the fast-burn alert fire</summary>
-    <p>Keep traffic going, then stop the Go service. Every valid request now fails with 503, so after about five minutes the 1-hour error ratio passes 14.4 × 0.5% = 7.2%, and two minutes later <code>TokenAvailabilityFastBurn</code> turns from pending to firing.</p>
+    <p>Keep traffic going, then freeze Redis for ten minutes. Every valid request now fails with 503, so after about five minutes the 1-hour error ratio passes 14.4 × 0.5% = 7.2%, and two minutes later <code>TokenAvailabilityFastBurn</code> turns from pending to firing. The pause ends by itself; the alert clears a few minutes later, thanks to the 5-minute window.</p>
     <div class="cmd"><pre>API=http://127.0.0.1:8080 bash scripts/scenarios.sh baseline 900 &
-kubectl -n token-service scale deploy/token-service-grpc --replicas=0   # plain mode; in GitOps mode Argo CD scales it back
-# ... watch http://127.0.0.1:9091/alerts, then:
-kubectl -n token-service scale deploy/token-service-grpc --replicas=2</pre></div>
+kubectl -n token-service exec sts/token-service-redis -- sh -c \
+  'REDISCLI_AUTH="$(cat /etc/secrets/redis/password)" redis-cli CLIENT PAUSE 600000 ALL'
+# watch http://127.0.0.1:9091/alerts (Pending, then Firing after ~7 minutes)</pre></div>
   </details>
   <div class="why"><b>Why.</b> Alerts are on symptoms users feel, measured against an error budget, so a short blip doesn't page but a steady burn does. The short window in each pair makes the alert stop soon after the problem does. 4xx answers don't count: a bad JWT is the caller's problem.</div>
 </section>
