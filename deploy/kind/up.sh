@@ -2,6 +2,7 @@
 # Runs the whole token service on a local kind cluster. Same script on a Mac
 # (Apple Silicon or Intel), Linux, and GitHub Actions.
 # Usage (from the repo root):  ./deploy/kind/up.sh
+#   OBSERVABILITY=0 ./deploy/kind/up.sh   # app only, skip Prometheus/Grafana/Loki/Tempo
 # Re-run it after a code change: it rebuilds, reloads and rolls out the new images.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -11,6 +12,7 @@ CLUSTER=token-service
 NS=token-service
 RELEASE=token-service
 API_PORT=8080                       # must match hostPort in deploy/kind/cluster.yaml
+OBSERVABILITY="${OBSERVABILITY:-1}"
 HELM_TIMEOUT="${HELM_TIMEOUT:-5m}"
 [[ $IN_CI == 1 ]] && HELM_TIMEOUT="${HELM_TIMEOUT_CI:-8m}"   # shared runners are slower
 
@@ -20,17 +22,18 @@ for tool in kind kubectl helm; do
   command -v "$tool" >/dev/null || { echo "missing: $tool  ->  ./deploy/kind/install-tools.sh"; exit 1; }
 done
 
-# 3 nodes + 6 pods need roughly 3 GB; builds need more. Docker Desktop's
+# 3 nodes + app ~3 GB; with the observability stack ~5 GB. Docker Desktop's
 # default on a Mac can be too low.
 mem_gb=$(( $(docker info --format '{{.MemTotal}}') / 1024 / 1024 / 1024 ))
 cpus=$(docker info --format '{{.NCPU}}')
 echo "Docker resources: ${cpus} CPUs, ${mem_gb} GB"
-if (( mem_gb < 6 || cpus < 4 )); then
-  echo "warning: give Docker at least 4 CPUs and 6 GB (Docker Desktop > Settings > Resources)"
+want_gb=6; [[ $OBSERVABILITY == 1 ]] && want_gb=8
+if (( mem_gb < want_gb - 1 || cpus < 4 )); then
+  echo "warning: give Docker at least 4 CPUs and ${want_gb} GB (Docker Desktop > Settings > Resources)"
 fi
 
 # 1. Secrets on this machine (same files Docker Compose uses; never committed)
-[[ -f secrets/postgres_password.txt ]] || ./scripts/init-secrets.sh
+[[ -f secrets/postgres_password.txt ]] || bash scripts/init-secrets.sh
 
 # 2. Cluster
 if ! kind get clusters 2>/dev/null | grep -qx "$CLUSTER"; then
@@ -87,14 +90,24 @@ kubectl -n "$NS" create configmap token-db-init \
   --from-file=init.sql=database/init.sql --dry-run=client -o yaml | apply
 echo "secrets and db seed applied"
 
-# 6. Install / upgrade, and wait until every pod is ready
+# 6. Observability first: the app chart's ServiceMonitors need its CRDs,
+#    and the apps should find the collector when they start
+APP_EXTRA=()
+if [[ $OBSERVABILITY == 1 ]]; then
+  bash deploy/observability/install.sh
+  APP_EXTRA=(--set otel.endpoint=http://otel-collector.observability.svc:4317
+             --set metrics.serviceMonitor.enabled=true)
+fi
+
+# 7. Install / upgrade the app, and wait until every pod is ready
 if ! helm upgrade --install "$RELEASE" deploy/helm/token-service \
       --namespace "$NS" \
       --set api.image.tag="$TAG" \
       --set grpc.image.tag="$TAG" \
+      ${APP_EXTRA[@]+"${APP_EXTRA[@]}"} \
       --wait --timeout "$HELM_TIMEOUT"; then
   echo "install did not become ready; diagnostics:"
-  ./deploy/kind/debug.sh
+  bash deploy/kind/debug.sh
   exit 1
 fi
 
@@ -102,3 +115,5 @@ fi
 kubectl -n "$NS" get pods -o wide
 echo
 echo "API: http://127.0.0.1:$API_PORT   (next: ./deploy/kind/smoke.sh)"
+[[ $OBSERVABILITY == 1 ]] && echo "UIs: ./deploy/observability/ui.sh   (checks: ./deploy/observability/check.sh)"
+exit 0

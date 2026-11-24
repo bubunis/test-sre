@@ -61,4 +61,4 @@ elif [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
   echo "add to your shell profile:  export PATH=\"$BIN_DIR:\$PATH\""
 fi
 export PATH="$BIN_DIR:$PATH"
-kind version; kubectl version --client | head -1; helm version --short
+kind version; kubectl version --client 2>/dev/null | sed -n 1p; helm version --short

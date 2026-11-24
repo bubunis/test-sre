@@ -24,6 +24,13 @@ deploy/
 │   ├── smoke.sh            # e2e + security checks (CHAOS=1: Redis outage too)
 │   ├── debug.sh            # pods, events, logs when something is stuck
 │   └── down.sh             # delete the cluster
+├── observability/
+│   ├── versions.env        # pinned chart versions
+│   ├── values/             # kube-prometheus-stack, loki, tempo, otel-collector
+│   ├── render.sh           # render all four charts offline (catches value mistakes)
+│   ├── install.sh          # namespace, Grafana login, dashboards, helm installs
+│   ├── check.sh            # metrics, logs, traces, dashboards end to end
+│   └── ui.sh               # Grafana :3000, Prometheus :9091, Alertmanager :9093
 └── helm/token-service/
     ├── values.yaml         # replicas, resources, settings (no secrets)
     └── templates/
@@ -31,7 +38,8 @@ deploy/
         ├── api.yaml        # Deployment + NodePort Service + PDB
         ├── grpc.yaml       # Deployment + headless Service + PDB
         ├── postgres.yaml   # StatefulSet + PVC + headless Service
-        └── redis.yaml      # StatefulSet + headless Service
+        ├── redis.yaml      # StatefulSet + headless Service
+        └── servicemonitor.yaml  # Prometheus scrape config (when the CRD exists)
 ```
 
 ## Run it
@@ -40,7 +48,9 @@ deploy/
 ./deploy/kind/install-tools.sh # once; skips tools you already have (FORCE=1 to pin)
 docker compose down            # free up CPU/memory
 ./deploy/kind/up.sh            # ~3-5 min the first time
-./deploy/kind/smoke.sh         # CHAOS=1 adds a Redis outage test
+./deploy/kind/smoke.sh         # CHAOS=1 adds a Redis outage and a node drain
+./deploy/observability/check.sh
+./deploy/observability/ui.sh   # Grafana on http://127.0.0.1:3000
 ./deploy/kind/down.sh          # when done
 ```
 
@@ -71,12 +81,35 @@ CI runs on amd64, and also on arm64 when the repo is public.
 - **Node maintenance works.** `kubectl drain` respects the PodDisruptionBudgets; `CHAOS=1 smoke.sh` drains a worker under load and checks the API stays up.
 - **Rollouts without downtime.** `maxUnavailable: 0`, a PodDisruptionBudget, and a short `preStop` sleep on the API so it leaves the Service before it stops.
 
+## Observability
+
+Installed by `up.sh` (skip with `OBSERVABILITY=0`) into namespace `observability`, from the official charts:
+
+| Chart | What | Notes |
+| --- | --- | --- |
+| `prometheus-community/kube-prometheus-stack` | Prometheus, Alertmanager, Grafana, kube-state-metrics | node-exporter and kind's unreachable control-plane targets turned off |
+| `grafana-community/loki` | Logs, monolithic | filesystem on a 2 Gi PVC, 72 h retention, caches off |
+| `grafana-community/tempo` | Traces, single binary | local storage on a 2 Gi PVC, 72 h retention |
+| `open-telemetry/opentelemetry-collector` | One entry point for traces and logs | masks emails, adds pod/namespace/node to every span and log line |
+
+```
+api, grpc ──OTLP──▶ otel-collector ──▶ Tempo (traces)
+                                   └─▶ Loki  (logs, email masked)
+Prometheus ──scrape (ServiceMonitor)──▶ api /metrics, grpc :9090/metrics
+Grafana ──▶ Prometheus, Loki, Tempo   (same 6 dashboards and data source UIDs as Compose)
+```
+
+- The dashboards are the same JSON files as Compose. A labelled ConfigMap is picked up by Grafana's sidecar, so there's one copy of each dashboard.
+- The ServiceMonitors set `job` to `python-token-service` / `go-token-service`, the same as in Compose, so queries don't change.
+- Grafana's password comes from `secrets/grafana_admin_password.txt`. Anonymous access and sign-up are off, and the UIs are reached only through `kubectl port-forward` on 127.0.0.1.
+- The namespace enforces the `baseline` Pod Security level (and warns on `restricted`): these third-party charts don't all set every restricted field.
+
 ## Why only 3 nodes
 
-Three kind nodes take ~1.5 GB before any app pod. That fits a laptop (give Docker 4 CPUs / 6 GB) and a GitHub runner (4 CPUs / 16 GB). Production would add a 3-node control plane and 3 zones; with two zones a quorum-based system (etcd, Redis Sentinel) can't survive losing one, so I kept stateful parts single and said so.
+Three kind nodes take ~1.5 GB before any app pod; app + observability bring it to ~5 GB. That fits a laptop (give Docker 4 CPUs / 8 GB) and a GitHub runner (4 CPUs / 16 GB). Production would add a 3-node control plane and 3 zones; with two zones a quorum-based system (etcd, Redis Sentinel) can't survive losing one, so I kept stateful parts single and said so.
 
 Postgres stays on the node that holds its volume (local storage, like a zonal disk), so the drain test drains the *other* worker.
 
 ## Not here yet
 
-Observability stack (PR 6), NetworkPolicies, HPA and SLO alerts (PR 7). Postgres and Redis are single pods; in production I'd use a managed database or an operator (CloudNativePG, Redis Sentinel).
+NetworkPolicies, HPA and SLO alerts (PR 7). Postgres and Redis are single pods; in production I'd use a managed database or an operator (CloudNativePG, Redis Sentinel).

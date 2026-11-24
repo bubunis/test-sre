@@ -1,0 +1,25 @@
+{{- if and .Values.metrics.serviceMonitor.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1") }}
+{{- range $component, $m := dict "api" (dict "port" "http" "job" "python-token-service") "grpc" (dict "port" "metrics" "job" "go-token-service") }}
+{{- $c := dict "root" $ "component" $component }}
+---
+# Prometheus scrapes every pod behind the Service. The job label matches
+# Docker Compose, so the same Grafana dashboards work unchanged.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "ts.name" $c }}
+  labels:
+    {{- include "ts.labels" $c | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "ts.selector" $c | nindent 6 }}
+  endpoints:
+    - port: {{ $m.port }}
+      path: /metrics
+      interval: {{ $.Values.metrics.serviceMonitor.interval }}
+      relabelings:
+        - targetLabel: job
+          replacement: {{ $m.job }}
+{{- end }}
+{{- end }}

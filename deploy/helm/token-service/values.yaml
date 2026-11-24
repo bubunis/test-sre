@@ -21,8 +21,16 @@ topologySpread:
   whenUnsatisfiable: DoNotSchedule
 
 otel:
-  # Empty = no OTLP export (logs still go to stdout as JSON). PR 6 sets this.
+  # Where traces and logs go. Empty = no OTLP export (logs still go to stdout
+  # as JSON). deploy/kind/up.sh sets it when the observability stack is installed.
   endpoint: ""
+
+metrics:
+  # ServiceMonitors for Prometheus (kube-prometheus-stack). Only rendered when
+  # the cluster has the ServiceMonitor CRD.
+  serviceMonitor:
+    enabled: false
+    interval: 10s
 
 api:
   image:
