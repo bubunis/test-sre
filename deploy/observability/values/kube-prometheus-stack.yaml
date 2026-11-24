@@ -1,0 +1,113 @@
+# kube-prometheus-stack, sized for a laptop / GitHub runner.
+fullnameOverride: kps
+
+# kind runs these control-plane parts on 127.0.0.1 inside the node, so
+# Prometheus can't scrape them; leaving them on only produces "down" alerts.
+kubeControllerManager: { enabled: false }
+kubeScheduler: { enabled: false }
+kubeEtcd: { enabled: false }
+kubeProxy: { enabled: false }
+
+# node-exporter needs host access (hostPID, hostNetwork), which the namespace's
+# Pod Security level doesn't allow. Container CPU/memory still come from the kubelet.
+nodeExporter: { enabled: false }
+
+prometheus:
+  prometheusSpec:
+    scrapeInterval: 10s
+    evaluationInterval: 10s
+    retention: 2d
+    retentionSize: 1GB
+    # Pick up ServiceMonitors and rules from every namespace, not only ones
+    # labelled with this release (the app chart ships its own ServiceMonitors)
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    resources:
+      requests: { cpu: 100m, memory: 400Mi }
+      limits:   { memory: 1Gi }
+
+alertmanager:
+  alertmanagerSpec:
+    resources:
+      requests: { cpu: 10m, memory: 32Mi }
+      limits:   { memory: 128Mi }
+
+prometheusOperator:
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits:   { memory: 256Mi }
+
+kube-state-metrics:
+  resources:
+    requests: { cpu: 10m, memory: 32Mi }
+    limits:   { memory: 128Mi }
+
+grafana:
+  fullnameOverride: grafana
+  # Password from secrets/grafana_admin_password.txt (Secret made by install.sh)
+  admin:
+    existingSecret: grafana-admin
+    userKey: admin-user
+    passwordKey: admin-password
+  persistence: { enabled: false }   # dashboards and data sources are code
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits:   { memory: 764Mi }
+  grafana.ini:
+    analytics:
+      reporting_enabled: false
+      check_for_updates: false
+    users:
+      allow_sign_up: false
+    auth.anonymous:
+      enabled: false
+    security:
+      disable_gravatar: true
+    news:
+      news_feed_enabled: false
+  sidecar:
+    datasources:
+      uid: prometheus                 # the UID the dashboards use
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      folderAnnotation: grafana_folder
+      provider:
+        foldersFromFilesStructure: true
+        allowUiUpdates: false
+        disableDelete: true
+  # Same data sources and log <-> trace links as in Docker Compose
+  additionalDataSources:
+    - name: Loki
+      uid: loki
+      type: loki
+      access: proxy
+      url: http://loki.observability.svc:3100
+      editable: false
+      jsonData:
+        derivedFields:
+          - name: TraceID
+            matcherType: label
+            matcherRegex: trace_id
+            datasourceUid: tempo
+            url: "$${__value.raw}"
+            urlDisplayLabel: View trace
+    - name: Tempo
+      uid: tempo
+      type: tempo
+      access: proxy
+      url: http://tempo.observability.svc:3200
+      editable: false
+      jsonData:
+        nodeGraph:
+          enabled: true
+        tracesToLogsV2:
+          datasourceUid: loki
+          filterByTraceID: true
+          spanStartTimeShift: "-5m"
+          spanEndTimeShift: "5m"
+          tags:
+            - key: service.name
+              value: service_name

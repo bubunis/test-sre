@@ -11,6 +11,13 @@ API="${API_URL:-http://127.0.0.1:8080}"
 pass=0; fail=0
 ok()  { echo "  PASS  $*"; pass=$((pass+1)); }
 bad() { echo "  FAIL  $*"; fail=$((fail+1)); }
+eventually_200() {  # /token returns 200 within 60 s
+  for _ in $(seq 1 30); do
+    [[ "$(code alice@example.com -H "Authorization: Bearer $JWT")" == 200 ]] && return 0
+    sleep 2
+  done
+  return 1
+}
 check() { local name=$1; shift; if "$@" >/dev/null 2>&1; then ok "$name"; else bad "$name"; fi; }
 k() { kubectl -n "$NS" "$@"; }
 
@@ -37,7 +44,7 @@ code() {  # code <email> [curl args...]  -> HTTP status of POST /token
   curl -s -o /dev/null -w '%{http_code}' -X POST "$API/token" \
     -H "Content-Type: application/json" -d "{\"user_email\":\"$email\"}" "$@"
 }
-JWT=$(jwt)
+JWT=$(jwt login-service token:mint 1800)   # outlives a full CHAOS run
 
 echo "Functional"
 check "readyz is 200"                  test "$(curl -s -o /dev/null -w '%{http_code}' "$API/readyz")" = 200
@@ -94,8 +101,7 @@ if [[ "${CHAOS:-0}" == 1 ]]; then
   k scale sts/token-service-redis --replicas=1 >/dev/null
   check "Redis back"                   k rollout status sts/token-service-redis --timeout=90s
   check "Go pods ready again"          k wait pod -l app.kubernetes.io/name=grpc --for=condition=Ready --timeout=60s
-  sleep 3
-  check "/token works again"           test "$(code alice@example.com -H "Authorization: Bearer $JWT")" = 200
+  check "/token works again"           eventually_200
 fi
 
 if [[ "${CHAOS:-0}" == 1 ]]; then
@@ -116,8 +122,7 @@ if [[ "${CHAOS:-0}" == 1 ]]; then
   check "API back to 2 ready pods"     k rollout status deploy/token-service-api --timeout=120s
   check "Go back to 2 ready pods"      k rollout status deploy/token-service-grpc --timeout=120s
   check "Redis ready (moved if it was there)" k rollout status sts/token-service-redis --timeout=120s
-  sleep 5
-  check "/token works with one zone"   test "$(code alice@example.com -H "Authorization: Bearer $JWT")" = 200
+  check "/token works with one zone"   eventually_200
   kill "$poller" 2>/dev/null; wait "$poller" 2>/dev/null
   errors=$(grep -c x "$errlog" || true); rm -f "$errlog"
   echo "  info: ${errors:-0} failed /token calls during the drain (non-zero only if Redis had to move)"
