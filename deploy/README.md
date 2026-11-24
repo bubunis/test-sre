@@ -114,7 +114,7 @@ Installed by `up.sh` (skip with `OBSERVABILITY=0`) into namespace `observability
 api, grpc ──OTLP──▶ otel-collector ──▶ Tempo (traces)
                                    └─▶ Loki  (logs, email masked)
 Prometheus ──scrape (ServiceMonitor)──▶ api /metrics, grpc :9090/metrics
-Grafana ──▶ Prometheus, Loki, Tempo   (same 6 dashboards and data source UIDs as Compose)
+Grafana ──▶ Prometheus, Loki, Tempo   (same 7 dashboards and data source UIDs as Compose)
 ```
 
 - The dashboards are the same JSON files as Compose. A labelled ConfigMap is picked up by Grafana's sidecar, so there's one copy of each dashboard.
@@ -186,13 +186,21 @@ Both Deployments have an HPA on CPU (70% of the request): API 2–5 pods, Go ser
 | Availability of `POST /token` (no 5xx) | 99.5% over 30 days | fast burn (14.4× over 1 h and 5 m) and slow burn (6× over 6 h and 30 m), both critical |
 | Latency of `POST /token` | 95% under 0.5 s | 14.4× burn over 1 h and 5 m, warning |
 
-Plus dependency alerts: Go service or API not scraped, DB pool over 90%, audit queue over 100 events, events stuck unacknowledged for 15 minutes, a client hitting the rate limit. Rules live in `templates/prometheusrule.yaml`; see them in Prometheus (`:9091/alerts`) or Grafana → Alerting. No receiver is set up, so they show but don't notify.
+4xx answers don't count against the SLO: a bad JWT or an unknown user is the caller's problem, and the Security dashboard watches those. Plus dependency alerts (warnings that explain a page, not pages): Go service or API not scraped, DB pool over 90%, audit queue over 100 events, events stuck unacknowledged for 15 minutes, a client hitting the rate limit. Rules live in `templates/prometheusrule.yaml`; see them in Prometheus (`:9091/alerts`) or Grafana → Alerting. No receiver is set up, so they show but don't notify.
 
 ## Why only 3 nodes
 
 Three kind nodes take ~1.5 GB before any app pod; app + observability bring it to ~5 GB, and Argo CD adds ~0.5 GB in GitOps mode. That fits a laptop (give Docker 4 CPUs / 8 GB) and a GitHub runner (4 CPUs / 16 GB). Production would add a 3-node control plane and 3 zones; with two zones a quorum-based system (etcd, Redis Sentinel) can't survive losing one, so I kept stateful parts single and said so.
 
 Postgres stays on the node that holds its volume (local storage, like a zonal disk), so the drain test drains the *other* worker.
+
+## Production scenarios
+
+- **More traffic.** The HPAs add API and Go pods on CPU (`./deploy/kind/load.sh` shows it). The limits after that are the database (5 API pods × 10 connections = 50, the `token_api` limit) and a single Redis; next steps would be PgBouncer and Redis replicas.
+- **A node goes away.** Pods are spread over two zones with PodDisruptionBudgets; `CHAOS=1 smoke.sh` drains a worker under load and checks `/token` keeps working. Postgres can't move off its node (local volume), which is why production would use a managed or replicated database.
+- **Redis or the Go service fails.** The Go pods go not-ready but aren't restarted (restarting wouldn't fix Redis), `/token` returns 503 within the 2 s deadline, and the API recovers by itself when they're back. The Dependencies dashboard and the burn-rate alert show it.
+- **Debugging a slow or failing request.** Start from the alert or the Overview panel, open an example trace from the Traces dashboard, see which span is slow, then read that request's logs by its trace id.
+- **A bad deploy.** In GitOps mode, revert the commit and Argo CD rolls back; rollouts never drop below the desired replica count (`maxUnavailable: 0`).
 
 ## Not here yet
 

@@ -90,7 +90,7 @@
     {
       "type": "stat",
       "title": "Availability (no 5xx), selected range",
-      "description": "Share of POST /token requests that did not fail with a server error (5xx). Target 99.9%. 4xx (auth, unknown user) are caller errors and do not count against it.",
+      "description": "Share of POST /token requests that did not fail with a server error (5xx). Target 99.5% (the SLO; see the SLOs dashboard). 4xx (auth, unknown user) are caller errors and do not count against it.",
       "targets": [
         {
           "refId": "A",
@@ -124,7 +124,7 @@
               },
               {
                 "color": "green",
-                "value": 0.999
+                "value": 0.995
               }
             ]
           },

@@ -10,7 +10,7 @@ I used Claude to help draft some of the code, tests and docs. I reviewed every c
 
 - **Step 1 – secrets and closed ports:** done, merged
 - **Step 2 – token lifetime cap:** done, merged
-- **Step 2b – network isolation:** deferred (see below)
+- **Step 2b – network isolation:** done on Kubernetes with NetworkPolicies; a service mesh (Istio) would go further, skipped on purpose (see below)
 - **Step 3 – JWT auth for callers:** done, merged
 - **Step 4 – non-root containers, multi-stage images:** done (distroless Go image, uid 65532; Python uid 10001)
 - **Step 5 – least-privilege DB user:** done (`token_api`, read-only, in the review fixes)
@@ -71,6 +71,22 @@ While testing Step 2, I minted a token for `test@example.com`, a user that doesn
 
 So any container on that network (Jaeger, Prometheus, the collector) could mint tokens for anyone if it were compromised. I prepared a fix, **Step 2b**: separate Docker networks, plus making the Go service accept gRPC only on the network it shares with the API. Port isolation alone isn't enough, because Prometheus has to share a network with the Go service to scrape it. I've **deferred** 2b for now to get caller authentication in first. The risk needs an attacker who already controls a container, but it's still open. Longer term, mTLS between the API and the Go service is the proper fix.
 
+### Could Istio fix 2b? Yes, on Kubernetes. I skipped it on purpose.
+
+On Kubernetes I closed the hole with NetworkPolicies: only API pods can reach the Go service's gRPC port. That works on IP addresses and labels. Istio would close it with identity instead, which is stronger:
+
+- Every pod gets a cryptographic identity from its ServiceAccount (`spiffe://cluster.local/ns/token-service/sa/token-service-api`), and Istio's proxies talk mTLS to each other. With a `PeerAuthentication` in `STRICT` mode, all traffic in the namespace is encrypted, which also closes "traffic between services isn't encrypted".
+- An `AuthorizationPolicy` on the Go service would allow `token.TokenService/MintToken` only from the API's identity. A pod without that identity gets `RBAC: access denied`, even if a NetworkPolicy were missing or wrong, or the attacker sat in the same namespace.
+
+I left it out on purpose, for two reasons:
+
+1. **Complexity.** A mesh adds CRDs, proxy injection, its own control plane and a new layer to debug (probes, Prometheus scraping through the proxies, ServiceAccounts per workload, which I don't have yet: the pods use the default one with token mounting turned off). For one gRPC hop, NetworkPolicies close the immediate risk with nothing extra running.
+2. **My laptop's RAM and CPU.** Docker Desktop has 8 GB, and the cluster already uses about 5–6 GB with the observability stack and Argo CD. Istio's defaults are heavy for that: `istiod` asks for 500m CPU and 2 GiB of memory, and every pod gets a sidecar that asks for 100m CPU and 128 MiB, so about 10 app and observability pods would reserve another 1 CPU and 1.25 GiB. Trimmed down, or in ambient mode (one `ztunnel` per node instead of a sidecar per pod), it's lighter, but it would still push the laptop and the GitHub runners close to their limits and slow every run. These are estimates; before adding it I'd measure with `kubectl top`.
+
+Istio doesn't help Docker Compose either: there the original 2b plan (separate Docker networks) is still the fix.
+
+If I add it later: Istio in ambient mode as one more Argo CD Application, a ServiceAccount per workload, `PeerAuthentication` `STRICT` for `token-service`, an `AuthorizationPolicy` for the Go service, and a check in `policy-check.sh` that a pod without the API's identity is refused.
+
 ## Step 3 – Callers have to authenticate
 
 **Branch:** `step3-jwt-auth`
@@ -102,8 +118,8 @@ What JWT doesn't solve yet: it proves *who* is calling, not *which users* that c
 ## Still open
 
 - **Any authenticated caller can request any user.** Needs per-client grants (D2).
-- **In Docker Compose, any container on the network can call the Go service directly.** Closed on Kubernetes by NetworkPolicies; mTLS would close it everywhere.
-- **Traffic between services isn't encrypted.** Planned with mTLS.
+- **In Docker Compose, any container on the network can call the Go service directly.** Closed on Kubernetes by NetworkPolicies; the 2b plan (separate Docker networks) would close it in Compose.
+- **Traffic between services isn't encrypted, and the Go service trusts the network, not an identity.** mTLS fixes both: Istio (ambient mode) on Kubernetes, skipped for now for complexity and laptop resources (see 2b), or mTLS in the services themselves.
 - **Tokens are stored in Redis as the raw key.** Anyone who can read Redis can copy a valid token. I want to store a SHA-256 of the token instead.
 - **`/metrics` and `/docs` are on the public port, and the Compose file has no healthchecks.** CI still waits with `sleep 15`.
 - **Permissions aren't stored with the token, and stuck audit events aren't retried.** From the QA review, planned.

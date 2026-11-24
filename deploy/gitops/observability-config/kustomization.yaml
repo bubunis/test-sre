@@ -14,6 +14,7 @@ configMapGenerator:
       - ../../../observability/grafana/provisioning/dashboards/json/token-overview.json
       - ../../../observability/grafana/provisioning/dashboards/json/token-runtime.json
       - ../../../observability/grafana/provisioning/dashboards/json/token-security.json
+      - ../../../observability/grafana/provisioning/dashboards/json/token-slo.json
       - ../../../observability/grafana/provisioning/dashboards/json/token-traces.json
     options:
       disableNameSuffixHash: true
