@@ -45,7 +45,7 @@ spec:
     syncOptions:
       - CreateNamespace=false     # namespaces (with their Pod Security labels) come from bootstrap.sh
       {{- if .serverSide }}
-      - ServerSideApply=true      # CRDs too big for client-side apply
+      - ServerSideApply=true      # CRDs and the dashboards ConfigMap are too big for client-side apply
       {{- end }}
     retry:
       limit: 10

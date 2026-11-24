@@ -62,7 +62,7 @@ Grafana is at <http://127.0.0.1:3000> (on kind, run `ui.sh` first). User `admin`
 cat secrets/grafana_admin_password.txt; echo
 ```
 
-Six dashboards are under **Dashboards → Token Service**: Overview, Security & Auth, Logs, Traces, Runtime, and Dependencies (DB pool, Redis queue).
+Seven dashboards are under **Dashboards → Token Service**: SLOs (error budgets and burn rates), Overview, Security & Auth, Logs, Traces, Runtime, and Dependencies (DB pool, Redis queue).
 
 To follow one request across both services:
 

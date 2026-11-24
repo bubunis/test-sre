@@ -114,7 +114,7 @@ Installed by `up.sh` (skip with `OBSERVABILITY=0`) into namespace `observability
 api, grpc ──OTLP──▶ otel-collector ──▶ Tempo (traces)
                                    └─▶ Loki  (logs, email masked)
 Prometheus ──scrape (ServiceMonitor)──▶ api /metrics, grpc :9090/metrics
-Grafana ──▶ Prometheus, Loki, Tempo   (same 6 dashboards and data source UIDs as Compose)
+Grafana ──▶ Prometheus, Loki, Tempo   (same 7 dashboards and data source UIDs as Compose)
 ```
 
 - The dashboards are the same JSON files as Compose. A labelled ConfigMap is picked up by Grafana's sidecar, so there's one copy of each dashboard.

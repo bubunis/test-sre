@@ -22,16 +22,18 @@ The data sources are set up automatically. From a log line you can jump to its t
 
 ## Dashboards
 
-Six dashboards load automatically under **Dashboards → Token Service**:
+Seven dashboards load automatically under **Dashboards → Token Service**:
 
-- **Overview:** is it healthy? Availability against a 99.9% target, request rate, error ratios, mint latency, which services are up, and the latest errors.
+- **SLOs:** the two SLOs for `POST /token` (99.5% without a 5xx, 95% under 0.5 s). For each: the SLI and the error budget left over the SLO window, budget burndown, burn rate in every window the alerts use, and which SLO alerts are firing. Below that, an error budget policy and a context row (traffic, 4xx share, latency percentiles, failed mint RPCs, Postgres pool, Redis queue) that helps explain a burn.
+
+- **Overview:** is it healthy? Availability against the 99.5% target, request rate, error ratios, mint latency, which services are up, and the latest errors.
 - **Security & Auth:** who's being refused and why, unknown-user lookups (a sign of someone probing), requests per calling service, and any direct calls to the Go service with invalid lifetimes.
 - **Logs Explorer:** filter by service, level and text. It also has a check that shows when a service stops sending logs.
 - **Traces:** slow requests, failed requests, and requests from one caller. Click through to the full trace.
 - **Runtime & Resources:** memory, CPU, file handles, goroutines and garbage collection, to spot leaks or pressure.
 - **Dependencies:** RED metrics for the gRPC calls, the database connection pool (in use, waits, timeouts), and the Redis audit queue (depth, pending, processing time).
 
-On Kubernetes there are also SLO alerts for `/token` (99.5% availability and 95% under 0.5 s, with fast and slow burn-rate alerts) and alerts for the dependencies. They show in Prometheus (`:9091/alerts`) and in Grafana → Alerting.
+On Kubernetes there are also SLO alerts for `/token` (99.5% availability and 95% under 0.5 s, with fast and slow burn-rate alerts) and alerts for the dependencies. They show in Prometheus (`:9091/alerts`), in Grafana → Alerting, and on the SLOs dashboard. In Compose there are no alert rules, so the SLOs dashboard shows the numbers but no alerts. Prometheus keeps 2 days on kind and 15 in Compose, so "30 days" covers what is stored.
 
 The dashboards are code, in `observability/grafana/provisioning/dashboards/json/`. Change them in git: edits made in the Grafana UI aren't saved.
 

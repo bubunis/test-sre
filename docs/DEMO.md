@@ -41,6 +41,7 @@ It prints the HTTP status, the trace id (the API returns it as `X-Trace-Id`) and
 
 ## 3. Dashboards with live metrics (4 min)
 
+- **SLOs:** start here. Two SLOs for `/token`, the error budget left, and the burn rate in each window the alerts use. The error budget policy panel says what the team does at each level.
 - **Overview:** request rate, errors and latency (RED) for `/token`, availability against the target.
 - **Dependencies:** gRPC RED by method and code, the database pool (in use, waits, timeouts), the Redis audit queue (depth, pending, processing time).
 - Show a failure live: freeze Redis for a minute and watch mint errors, 5xx and the Go pods going not-ready (but not restarting), then recovering by themselves:

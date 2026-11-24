@@ -104,7 +104,7 @@ CI runs on every push and pull request to `main`:
 │   ├── prometheus/prometheus.yml
 │   └── grafana/provisioning/
 │       ├── datasources/datasources.yaml
-│       └── dashboards/          # dashboards.yaml + json/ (the 6 dashboards)
+│       └── dashboards/          # dashboards.yaml + json/ (the 7 dashboards)
 ├── docs/
 │   ├── OBSERVABILITY.md         # dashboards, scenarios, queries
 │   ├── DEVELOPMENT.md           # this file
