@@ -43,7 +43,9 @@ It prints the HTTP status, the trace id (the API returns it as `X-Trace-Id`) and
 
 - **Overview:** request rate, errors and latency (RED) for `/token`, availability against the target.
 - **Dependencies:** gRPC RED by method and code, the database pool (in use, waits, timeouts), the Redis audit queue (depth, pending, processing time).
-- Show a failure live: `kubectl -n token-service scale sts/token-service-redis --replicas=0`, watch mint errors, 5xx and the Go pods going not-ready (but not restarting); scale back to 1 and watch it recover.
+- Show a failure live: freeze Redis for a minute and watch mint errors, 5xx and the Go pods going not-ready (but not restarting), then recovering by themselves:
+  `kubectl -n token-service exec sts/token-service-redis -- sh -c 'REDISCLI_AUTH="$(cat /etc/secrets/redis/password)" redis-cli CLIENT PAUSE 60000 ALL'`
+  (Scaling Redis to 0 works in plain mode only; in GitOps mode Argo CD puts it straight back.)
 
 ## 4. Observability strategy (2 min)
 
