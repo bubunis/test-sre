@@ -27,7 +27,7 @@ jobs:
     timeout-minutes: 35
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Create secrets
         run: bash scripts/init-secrets.sh
