@@ -1,0 +1,110 @@
+{{- if and .Values.slo.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1") }}
+{{- $budget := printf "%.4f" (subf 1.0 .Values.slo.availability) }}
+{{- $slowBudget := printf "%.4f" (subf 1.0 .Values.slo.latencyTarget) }}
+{{- $sel := `job="python-token-service",handler="/token"` }}
+# SLOs for POST /token, with multi-window, multi-burn-rate alerts (Google SRE
+# workbook, ch. 5). Error budget = 1 - availability = {{ $budget }} over 30 days.
+#   fast burn: 14.4x the budget rate for 1h (and 5m) -> 2% of the month's budget gone in an hour -> page
+#   slow burn:   6x the budget rate for 6h (and 30m) -> 5% gone in six hours         -> page
+# The short window makes the alert stop soon after the problem does.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ .Release.Name }}-slo
+  labels:
+    {{- include "ts.labels" (dict "root" . "component" "slo") | nindent 4 }}
+spec:
+  groups:
+    - name: token-service-slo.rules
+      interval: 30s
+      rules:
+        {{- range $w := list "5m" "30m" "1h" "6h" }}
+        # share of /token calls that failed with a 5xx
+        - record: token:request_error_ratio:rate{{ $w }}
+          expr: |
+            (sum(rate(http_requests_total{ {{- $sel }},status="5xx"}[{{ $w }}])) or vector(0))
+            /
+            sum(rate(http_requests_total{ {{- $sel }}}[{{ $w }}]))
+        # share of /token calls slower than the latency target
+        - record: token:request_slow_ratio:rate{{ $w }}
+          expr: |
+            1 - (
+              sum(rate(http_request_duration_seconds_bucket{ {{- $sel }},le="{{ $.Values.slo.latencySeconds }}"}[{{ $w }}]))
+              /
+              sum(rate(http_request_duration_seconds_count{ {{- $sel }}}[{{ $w }}]))
+            )
+        {{- end }}
+
+    - name: token-service-slo.alerts
+      rules:
+        - alert: TokenAvailabilityFastBurn
+          expr: |
+            token:request_error_ratio:rate1h > (14.4 * {{ $budget }})
+            and
+            token:request_error_ratio:rate5m > (14.4 * {{ $budget }})
+          for: 2m
+          labels: { severity: critical, slo: availability }
+          annotations:
+            summary: /token is failing fast enough to use 2% of the monthly error budget per hour
+            description: '{{`{{ $value | humanizePercentage }}`}} of /token calls returned 5xx over the last hour (budget {{ $budget }}). Check the Go service, Redis and Postgres panels on the Dependencies dashboard.'
+        - alert: TokenAvailabilitySlowBurn
+          expr: |
+            token:request_error_ratio:rate6h > (6 * {{ $budget }})
+            and
+            token:request_error_ratio:rate30m > (6 * {{ $budget }})
+          for: 15m
+          labels: { severity: critical, slo: availability }
+          annotations:
+            summary: /token errors will use the monthly error budget in about 5 days
+            description: '{{`{{ $value | humanizePercentage }}`}} of /token calls returned 5xx over the last 6 hours.'
+        - alert: TokenLatencySLOBurn
+          expr: |
+            token:request_slow_ratio:rate1h > (14.4 * {{ $slowBudget }})
+            and
+            token:request_slow_ratio:rate5m > (14.4 * {{ $slowBudget }})
+          for: 2m
+          labels: { severity: warning, slo: latency }
+          annotations:
+            summary: Too many /token calls are slower than {{ .Values.slo.latencySeconds }}s
+            description: '{{`{{ $value | humanizePercentage }}`}} of /token calls were slower than {{ .Values.slo.latencySeconds }}s over the last hour (target: under {{ $slowBudget }}).'
+
+    - name: token-service-dependencies.alerts
+      rules:
+        - alert: GoTokenServiceDown
+          expr: sum(up{job="go-token-service"}) == 0 or absent(up{job="go-token-service"})
+          for: 2m
+          labels: { severity: critical }
+          annotations:
+            summary: No Go token service pod can be scraped; /token can't mint
+        - alert: TokenAPIDown
+          expr: sum(up{job="python-token-service"}) == 0 or absent(up{job="python-token-service"})
+          for: 2m
+          labels: { severity: critical }
+          annotations:
+            summary: No API pod can be scraped
+        - alert: DBPoolNearlyExhausted
+          expr: max by (pod) (db_pool_connections_in_use / db_pool_connections_max) > 0.9
+          for: 5m
+          labels: { severity: warning }
+          annotations:
+            summary: 'API pod {{`{{ $labels.pod }}`}} is using over 90% of its database connections'
+            description: Requests will start waiting and then get 503. Check slow queries, or raise DB_POOL_MAX (mind the token_api connection limit).
+        - alert: TokenEventQueueBacklog
+          expr: max(token_events_queue_depth) > 100
+          for: 5m
+          labels: { severity: warning }
+          annotations:
+            summary: 'Over 100 token events are waiting for the audit worker ({{`{{ $value }}`}})'
+        - alert: TokenEventsStuckPending
+          expr: max(token_events_queue_pending) > 0
+          for: 15m
+          labels: { severity: warning }
+          annotations:
+            summary: Token events were delivered but never acknowledged (a worker died mid-event)
+        - alert: TokenRequestsRateLimited
+          expr: sum by (client_id) (rate(token_requests_rate_limited_total[5m])) > 1
+          for: 10m
+          labels: { severity: info }
+          annotations:
+            summary: 'Client {{`{{ $labels.client_id }}`}} keeps hitting the rate limit'
+{{- end }}

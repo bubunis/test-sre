@@ -1,0 +1,23 @@
+# Plain manifests for the observability namespace, managed by Argo CD:
+# the network policies, and the Grafana dashboards built from the same JSON
+# files Docker Compose uses (one copy of each dashboard).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: observability
+resources:
+  - ../../observability/networkpolicies.yaml
+configMapGenerator:
+  - name: token-dashboards
+    files:
+      - ../../../observability/grafana/provisioning/dashboards/json/token-dependencies.json
+      - ../../../observability/grafana/provisioning/dashboards/json/token-logs.json
+      - ../../../observability/grafana/provisioning/dashboards/json/token-overview.json
+      - ../../../observability/grafana/provisioning/dashboards/json/token-runtime.json
+      - ../../../observability/grafana/provisioning/dashboards/json/token-security.json
+      - ../../../observability/grafana/provisioning/dashboards/json/token-traces.json
+    options:
+      disableNameSuffixHash: true
+      labels:
+        grafana_dashboard: "1"
+      annotations:
+        grafana_folder: Token Service

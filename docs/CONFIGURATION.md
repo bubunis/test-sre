@@ -6,14 +6,17 @@ Both services are configured only through environment variables. Anything secret
 
 | Variable | Default | Kind | What it does |
 | --- | --- | --- | --- |
-| `DATABASE_URL` | (required) | config | Postgres URL without a password, e.g. `postgres://postgres@postgres:5432/tokendb` |
-| `DB_PASSWORD_FILE` | (required) | **secret file** | File containing the database password |
+| `DATABASE_URL` | (required) | config | Postgres URL without a password, e.g. `postgres://token_api@postgres:5432/tokendb`. `token_api` is a read-only login (`database/app-role.sh`), not the superuser |
+| `DB_PASSWORD_FILE` | (required) | **secret file** | File containing that login's password (`secrets/app_db_password.txt`) |
 | `DB_POOL_MIN` | `2` | config | Connections kept open between requests |
 | `DB_POOL_MAX` | `10` | config | Most connections open at once |
 | `DB_POOL_TIMEOUT_SECONDS` | `2` | config | How long a request waits for a free connection before getting 503 |
 | `DB_STATEMENT_TIMEOUT_MS` | `2000` | config | Longest a single query may run |
 | `TOKEN_SERVICE_HOST` | `localhost:50051` | config | Go token service address |
 | `GRPC_TIMEOUT_SECONDS` | `2` | config | Deadline for each call to the Go service; after it, the API returns 503 |
+| `GRPC_LB_POLICY` | `round_robin` | config | How calls are spread over Go pods. Needs `dns:///` in `TOKEN_SERVICE_HOST` to see more than one pod |
+| `RATE_LIMIT_PER_MINUTE` | `600` | config | Requests a minute each calling service (JWT client id) may make, per API pod. `0` turns the limit off. Over it: 429 with `Retry-After` |
+| `RATE_LIMIT_BURST` | `60` | config | Requests a client may make at once before the per-minute rate applies |
 | `JWT_ISSUER` | (required) | config | Expected `iss` claim |
 | `JWT_AUDIENCE` | (required) | config | Expected `aud` claim |
 | `JWT_PUBLIC_KEY_FILE` | one of these two | **secret file** | Public key that verifies caller JWTs (dev) |
@@ -23,6 +26,8 @@ Both services are configured only through environment variables. Anything secret
 | `JWT_LEEWAY_SECONDS` | `30` | config | Allowed clock difference |
 | `JWT_CA_FILE` | unset | secret file | CA bundle for an identity provider with an internal certificate |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset | config | Where traces and logs go (the OTel collector) |
+
+`user_email` must be 3 to 254 characters and contain `@`; it is lower-cased before the lookup.
 
 Endpoints for checks: `GET /livez` (process is up), `GET /readyz` (database and Go service reachable; 503 if not), `GET /metrics`.
 
@@ -47,3 +52,16 @@ Token lifetimes are fixed in code (`internal/tokenpolicy`): 15 minutes by defaul
 | --- | --- | --- |
 | config | `ConfigMap`, passed as environment variables | `DATABASE_URL`, `DB_POOL_MAX`, `JWT_ISSUER` |
 | secret file | `Secret`, mounted read-only as files; the `*_FILE` variable points at the mount | `DB_PASSWORD_FILE=/etc/secrets/db/password` |
+
+The Helm chart (`deploy/helm/token-service`) does exactly this. Secrets are created by `deploy/kind/up.sh` from the local `secrets/` folder, one per purpose, and each pod mounts only what it needs:
+
+| Secret | Keys | Mounted by |
+| --- | --- | --- |
+| `token-db` | `password` (superuser), `app-password` (read-only API login) | Postgres (both), API (`app-password` only) |
+| `token-redis` | `password`, `redis.conf` | Redis (both), Go service (`password` only) |
+| `token-jwt` | `public.pem` | API |
+
+## Database and Redis limits
+
+- Postgres: the API logs in as `token_api`, which can only `SELECT` from `users`, `memberships` and `group_permissions` (created on first start by `database/app-role.sh`). The `postgres` superuser is used by Postgres itself and never leaves its container.
+- Redis: `maxmemory 200mb` with `maxmemory-policy volatile-ttl` (in `secrets/redis.conf`, written by `scripts/init-secrets.sh`). When full, Redis drops the tokens closest to expiry instead of running out of memory.

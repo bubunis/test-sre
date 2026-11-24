@@ -1,0 +1,5 @@
+apiVersion: v2
+name: token-platform-apps
+description: App of apps - the Argo CD Applications for the token service and its platform
+type: application
+version: 0.1.0

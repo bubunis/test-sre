@@ -1,0 +1,38 @@
+{{- range $component := list "api" "grpc" }}
+{{- $v := index $.Values $component }}
+{{- if $v.autoscaling.enabled }}
+{{- $c := dict "root" $ "component" $component }}
+---
+# Scales on CPU (needs metrics-server: deploy/platform/install.sh installs it on kind).
+# Scale up fast, scale down slowly so a short lull doesn't drop capacity.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "ts.name" $c }}
+  labels:
+    {{- include "ts.labels" $c | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "ts.name" $c }}
+  minReplicas: {{ $v.autoscaling.minReplicas }}
+  maxReplicas: {{ $v.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ $v.autoscaling.cpuUtilization }}
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - { type: Pods, value: 2, periodSeconds: 30 }
+    scaleDown:
+      stabilizationWindowSeconds: 180
+      policies:
+        - { type: Pods, value: 1, periodSeconds: 60 }
+{{- end }}
+{{- end }}

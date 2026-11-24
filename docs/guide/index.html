@@ -1,0 +1,503 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Token Service: the reviewer's lab</title>
+<meta name="description" content="Step-by-step walkthrough of the SRE assignment: run it, follow a request, break it, secure it, scale it.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: sticky mission index on the left, one long lab column on the right; one column on phones */
+:root {
+  --bg: #f6f7f9; --surface: #ffffff; --ink: #1b2330; --muted: #5a6577; --line: #dde2ea;
+  --accent: #0b6e69; --accent-soft: #e2f2f0; --code-bg: #0f1722; --code-ink: #dbe4f0; --out-bg: #eef1f5;
+  --warn: #9a5b00; --warn-soft: #fff4e0;
+  --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0d1117; --surface: #141a23; --ink: #e3e8ef; --muted: #9aa6b6; --line: #263040;
+  --accent: #4fd1c5; --accent-soft: #10312f; --code-bg: #0a0e14; --code-ink: #d7e0ec; --out-bg: #18202b;
+  --warn: #f0b45a; --warn-soft: #2d2412; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #0d1117; --surface: #141a23; --ink: #e3e8ef; --muted: #9aa6b6; --line: #263040;
+  --accent: #4fd1c5; --accent-soft: #10312f; --code-bg: #0a0e14; --code-ink: #d7e0ec; --out-bg: #18202b;
+  --warn: #f0b45a; --warn-soft: #2d2412; color-scheme: dark; }
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.6 var(--sans); }
+a { color: var(--accent); }
+header.top { position: sticky; top: 0; z-index: 5; background: var(--surface); border-bottom: 1px solid var(--line);
+  display: flex; align-items: center; gap: 16px; padding: 10px max(16px, env(safe-area-inset-left, 0px)); }
+header.top .brand { font-weight: 700; letter-spacing: .01em; }
+header.top .brand span { color: var(--muted); font-weight: 500; }
+header.top .spacer { flex: 1; }
+header.top .progress { font: 500 13px var(--mono); color: var(--muted); }
+button.theme { font: 500 13px var(--sans); color: var(--ink); background: transparent; border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+.wrap { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 40px; max-width: 1180px; margin: 0 auto;
+  padding: 32px max(16px, env(safe-area-inset-right, 0px)) 80px max(16px, env(safe-area-inset-left, 0px)); }
+nav.index { position: sticky; top: 72px; align-self: start; max-height: calc(100vh - 96px); overflow: auto; }
+nav.index h2 { font: 600 12px var(--sans); text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 8px; }
+nav.index ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+nav.index a { display: flex; gap: 10px; align-items: baseline; padding: 6px 8px; border-radius: 6px; text-decoration: none; color: var(--ink); font-size: 14px; }
+nav.index a:hover, nav.index a.current { background: var(--accent-soft); }
+nav.index .n { font: 500 12px var(--mono); color: var(--muted); min-width: 1.6em; }
+nav.index a.done .n::before { content: "✓"; color: var(--accent); }
+nav.index a.done .n span { display: none; }
+main { min-width: 0; }
+h1 { font-size: 2.1rem; line-height: 1.2; margin: 0 0 12px; text-wrap: balance; }
+.lead { font-size: 1.1rem; color: var(--muted); max-width: 68ch; }
+section.mission { min-width: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 24px 28px; margin: 28px 0; scroll-margin-top: 72px; }
+section.mission > header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; }
+section.mission h2 { font-size: 1.35rem; margin: 0; text-wrap: balance; }
+.time { font: 500 13px var(--mono); color: var(--muted); }
+.req { font: 500 12px var(--sans); color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 2px 10px; }
+label.donebox { margin-left: auto; font-size: 14px; color: var(--muted); display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+section.mission p, section.mission li { max-width: 72ch; }
+ol.steps { padding-left: 1.3em; display: grid; gap: 14px; }
+ol.steps > li { min-width: 0; overflow-wrap: anywhere; }
+ol.steps > li::marker { font-family: var(--mono); color: var(--accent); }
+.cmd { position: relative; margin: 8px 0 0; }
+.cmd pre { margin: 0; background: var(--code-bg); color: var(--code-ink); border-radius: 8px; padding: 12px 14px; padding-right: 64px; overflow-x: auto; font: 14px/1.5 var(--mono); }
+.cmd button { position: absolute; top: 8px; right: 8px; font: 500 12px var(--sans); color: var(--code-ink); background: #ffffff14; border: 1px solid #ffffff30; border-radius: 5px; padding: 3px 8px; cursor: pointer; }
+.cmd button:focus-visible, button.theme:focus-visible, nav.index a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.out { margin: 6px 0 0; }
+.out pre { margin: 0; background: var(--out-bg); color: var(--ink); border-left: 3px solid var(--accent); border-radius: 0 8px 8px 0; padding: 10px 14px; overflow-x: auto; font: 13px/1.5 var(--mono); }
+.out .lbl { font: 600 11px var(--sans); text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+code { overflow-wrap: anywhere; font: 0.92em var(--mono); background: var(--out-bg); padding: 1px 5px; border-radius: 4px; }
+.why { border-top: 1px dashed var(--line); margin-top: 18px; padding-top: 12px; }
+.why b { color: var(--accent); }
+.note { background: var(--warn-soft); border-left: 3px solid var(--warn); padding: 10px 14px; border-radius: 0 8px 8px 0; margin: 14px 0; }
+.note b { color: var(--warn); }
+details { margin-top: 12px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; }
+details summary { cursor: pointer; font-weight: 600; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+.tablewrap { overflow-x: auto; margin: 10px 0; }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-weight: 600; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+.map td:first-child { white-space: nowrap; }
+footer { color: var(--muted); font-size: 14px; margin-top: 40px; }
+@media (max-width: 860px) {
+  .wrap { grid-template-columns: minmax(0, 1fr); gap: 0; padding-top: 20px; }
+  nav.index { position: static; max-height: none; margin-bottom: 8px; }
+  nav.index ol { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+  section.mission { padding: 18px 16px; }
+  h1 { font-size: 1.7rem; }
+  header.top .brand span { display: none; }
+  .map td:first-child { white-space: normal; }
+  nav.index { margin-bottom: 20px; }
+}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand">Token Service <span>· reviewer's lab</span></div>
+  <div class="spacer"></div>
+  <div class="progress" id="progress" aria-live="polite">0 of 12 done</div>
+  <button class="theme" id="theme" type="button" aria-label="Switch light or dark theme">Theme</button>
+</header>
+
+<div class="wrap">
+<nav class="index" aria-label="Missions">
+  <h2>Missions</h2>
+  <ol id="toc"></ol>
+</nav>
+
+<main>
+<h1>Token Service: the reviewer's lab</h1>
+<p class="lead">A guided tour of the assignment, in the order I'd show it. Each mission says how long it takes, what to run, what you should see, and why it's built that way. Everything runs on one laptop: Docker Compose first, then a three-node Kubernetes cluster (kind).</p>
+
+<div class="tablewrap"><table class="map">
+  <thead><tr><th>Assignment requirement</th><th>Where to see it</th></tr></thead>
+  <tbody>
+    <tr><td>Containerization</td><td>Mission 1 · <code>*/Dockerfile</code>, <code>docker-compose.yml</code></td></tr>
+    <tr><td>Kubernetes deployment</td><td>Missions 2–3 · <code>deploy/helm/token-service</code></td></tr>
+    <tr><td>Logging (JSON, trace context, Loki, one request across services)</td><td>Mission 4</td></tr>
+    <tr><td>Metrics (RED, DB pool, Redis queue, Prometheus, Grafana)</td><td>Mission 5</td></tr>
+    <tr><td>Distributed tracing (Python → PostgreSQL → Go → Redis, Tempo)</td><td>Mission 4</td></tr>
+    <tr><td>Bonus: network policies, HPA, SLO alerts, GitOps, CI</td><td>Missions 7–10 · <code>.github/workflows</code></td></tr>
+  </tbody>
+</table></div>
+
+<section class="mission" id="m0" data-title="Before you start">
+  <header><h2>Before you start</h2><span class="time">5 minutes</span><label class="donebox"><input type="checkbox"> Done</label></header>
+  <p>You need Docker (Docker Desktop on a Mac: give it 4 CPUs and 8 GB), <code>git</code>, <code>openssl</code> and <code>curl</code>. Apple Silicon, Intel and Linux all work; the scripts detect which one you have.</p>
+  <ol class="steps">
+    <li>Clone the repository and create the local secrets. Nothing secret is in git: this generates passwords and a dev-only key pair into <code>secrets/</code>, which git ignores.
+      <div class="cmd"><pre>git clone https://github.com/bubunis/test-sre.git && cd test-sre
+bash scripts/init-secrets.sh</pre></div>
+      <div class="out"><span class="lbl">You should see</span><pre>created secrets/postgres_password.txt
+created secrets/app_db_password.txt
+...
+secrets ready in ./secrets</pre></div>
+    </li>
+    <li>Install pinned <code>kind</code>, <code>kubectl</code> and <code>helm</code> for your OS and CPU (checksums verified). Skip any you already have.
+      <div class="cmd"><pre>./deploy/kind/install-tools.sh
+export PATH="$HOME/.local/bin:$PATH"</pre></div>
+    </li>
+  </ol>
+</section>
+
+<section class="mission" id="m1" data-title="Run it with Docker Compose">
+  <header><h2>Mission 1. Run it with Docker Compose</h2><span class="time">5 minutes</span><span class="req">Containerization</span><label class="donebox"><input type="checkbox"> Done</label></header>
+  <p>The quickest way to see the service work: two services, Postgres, Redis and the whole Grafana stack on one Docker network, with only the API published.</p>
+  <ol class="steps">
+    <li>Build and start everything.
+      <div class="cmd"><pre>docker compose up -d --build
+docker compose ps</pre></div>
+      <div class="out"><span class="lbl">You should see</span><pre>NAME                              STATUS
+sre-assignment-golang-service-1   Up
+sre-assignment-python-service-1   Up
+...                               (tempo-init "Exited (0)" is fine)</pre></div>
+    </li>
+    <li>Get a dev JWT (signed with the dev key, standing in for an identity provider) and ask for a token.
+      <div class="cmd"><pre>JWT=$(bash scripts/dev-token.sh)
+curl -s -X POST http://localhost:8000/token \
+  -H "Authorization: Bearer $JWT" -H "Content-Type: application/json" \
+  -d '{"user_email": "alice@example.com"}'</pre></div>
+      <div class="out"><span class="lbl">You should see</span><pre>{"token":"3f9c…","permissions":["read:data","write:data"]}</pre></div>
+    </li>
+    <li>Try without a token, and for a user who doesn't exist.
+      <div class="cmd"><pre>curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:8000/token -H "Content-Type: application/json" -d '{"user_email":"alice@example.com"}'
+curl -s -o /dev/null -w '%{http_code}\n' -X POST localhost:8000/token -H "Authorization: Bearer $JWT" -H "Content-Type: application/json" -d '{"user_email":"nobody@example.com"}'</pre></div>
+      <div class="out"><span class="lbl">You should see</span><pre>401
+404</pre></div>
+    </li>
+    <li>Look at how the images are built: multi-stage, non-root, minimal runtime.
+      <div class="cmd"><pre>docker inspect -f '{{.Config.User}}' $(docker compose ps -q golang-service) $(docker compose ps -q python-service)
+docker images | grep sre-assignment</pre></div>
+      <div class="out"><span class="lbl">You should see</span><pre>65532:65532
+10001:10001</pre></div>
+    </li>
+  </ol>
+  <div class="why"><b>Why.</b> The Go service runs from <code>distroless/static</code>: no shell, no package manager, just the binary, so it checks its own health over gRPC. The Python image builds its virtualenv in one stage and copies only that and the app files into a slim runtime. Passwords reach containers as Docker secrets (files), never as environment variables.</div>
+  <div class="cmd"><pre>docker compose down     # free the resources before Mission 2</pre></div>
+</section>
+
+<section class="mission" id="m2" data-title="Start the Kubernetes cluster">
+  <header><h2>Mission 2. Start the Kubernetes cluster</h2><span class="time">8 minutes</span><span class="req">Kubernetes</span><label class="donebox"><input type="checkbox"> Done</label></header>
+  <p>A kind cluster with one control plane and two workers labelled as two zones. <code>up.sh</code> builds the images for your CPU, loads them into the nodes, creates the Secrets from <code>secrets/</code>, and installs metrics-server, the observability stack and the app.</p>
+  <ol class="steps">
+    <li>Bring it up. Pick one mode:
+      <div class="cmd"><pre>./deploy/kind/up.sh              # plain: helm installs everything (works offline)
+# or
+GITOPS=1 ./deploy/kind/up.sh     # Argo CD installs everything from GitHub (see Mission 9)</pre></div>
+      <div class="out"><span class="lbl">You should see (last lines)</span><pre>NAME                                  READY   STATUS    NODE
+token-service-api-7c9…                1/1     Running   token-service-worker
+token-service-api-7c9…                1/1     Running   token-service-worker2
+token-service-grpc-5d8…               1/1     Running   token-service-worker
+token-service-grpc-5d8…               1/1     Running   token-service-worker2
+token-service-postgres-0              1/1     Running   token-service-worker2
+token-service-redis-0                 1/1     Running   token-service-worker
+
+API: http://127.0.0.1:8080</pre></div>
+    </li>
+    <li>See the layout: apps only on workers, one replica of each in each zone.
+      <div class="cmd"><pre>kubectl get nodes -L topology.kubernetes.io/zone
+kubectl -n token-service get deploy,sts,svc,hpa,pdb</pre></div>
+    </li>
+  </ol>
+  <div class="why"><b>Why.</b> Three nodes is the smallest layout that still shows zone spreading, PodDisruptionBudgets and node drains, and it fits a laptop and a GitHub runner. Postgres and Redis are StatefulSets; Postgres keeps its data on a PVC.</div>
+</section>
+
+<section class="mission" id="m3" data-title="Probes, limits, config, discovery">
+  <header><h2>Mission 3. Probes, limits, config and service discovery</h2><span class="time">5 minutes</span><span class="req">Kubernetes</span><label class="donebox"><input type="checkbox"> Done</label></header>
+  <ol class="steps">
+    <li>Run the end-to-end checks: token flow, security settings, zones.
+      <div class="cmd"><pre>./deploy/kind/smoke.sh</pre></div>
+      <div class="out"><span class="lbl">You should see</span><pre>Functional
+  PASS  readyz is 200
+  PASS  no JWT -> 401
+  PASS  alice gets a token
+  PASS  token stored in Redis
+Cluster layout
+  PASS  3 nodes Ready
+  PASS  API pods in 2 zones
+Security
+  PASS  no pod runs as root
+  PASS  token_api is not a superuser
+...
+passed: …  failed: 0</pre></div>
+    </li>
+    <li>Look at the probes and limits on a Go pod: native gRPC probes, liveness separate from readiness.
+      <div class="cmd"><pre>kubectl -n token-service describe pod -l app.kubernetes.io/name=grpc | grep -E "Liveness|Readiness|Limits|Requests" -A2 | head -20</pre></div>
+      <div class="out"><span class="lbl">You should see</span><pre>Limits:    cpu: 250m  memory: 128Mi
+Requests:  cpu: 50m   memory: 64Mi
+Liveness:  grpc &lt;pod&gt;:50051 liveness  ...
+Readiness: grpc &lt;pod&gt;:50051  ...</pre></div>
+    </li>
+    <li>Configuration: plain settings in ConfigMaps, passwords as files from Secrets. Service names are plain Kubernetes DNS.
+      <div class="cmd"><pre>kubectl -n token-service get configmap token-service-api -o yaml | grep -E "DATABASE_URL|TOKEN_SERVICE_HOST|_FILE"
+kubectl -n token-service get secrets</pre></div>
+      <div class="out"><span class="lbl">You should see</span><pre>DATABASE_URL: postgres://token_api@token-service-postgres:5432/tokendb
+DB_PASSWORD_FILE: /etc/secrets/db/password
+TOKEN_SERVICE_HOST: dns:///token-service-grpc:50051
+...
+token-db   token-jwt   token-redis</pre></div>
+    </li>
+  </ol>
+  <div class="why"><b>Why.</b> Readiness says "send me traffic" (the API checks the database and the Go service; the Go service checks Redis). Liveness only says "the process isn't stuck", so a Redis outage takes pods out of rotation without restarting them, which wouldn't help. The Go Service is headless and the API load-balances gRPC calls itself (<code>round_robin</code>), because one long-lived HTTP/2 connection would otherwise pin everything to one pod.</div>
+</section>
+
+<section class="mission" id="m4" data-title="Follow one request">
+  <header><h2>Mission 4. Follow one request: trace and logs</h2><span class="time">6 minutes</span><span class="req">Logging · Tracing</span><label class="donebox"><input type="checkbox"> Done</label></header>
+  <ol class="steps">
+    <li>Open the UIs (leave this terminal running) and log in to Grafana as <code>admin</code> with the password from <code>secrets/grafana_admin_password.txt</code>.
+      <div class="cmd"><pre>./deploy/observability/ui.sh</pre></div>
+      <div class="out"><span class="lbl">You should see</span><pre>Grafana:      http://127.0.0.1:3000  (admin / …)
+Prometheus:   http://127.0.0.1:9091
+Alertmanager: http://127.0.0.1:9093</pre></div>
+    </li>
+    <li>In a second terminal, send one request. The API returns its trace id in <code>X-Trace-Id</code>.
+      <div class="cmd"><pre>API=http://127.0.0.1:8080 bash scripts/demo-request.sh</pre></div>
+      <div class="out"><span class="lbl">You should see</span><pre>POST /token for alice@example.com -> HTTP 200
+trace id: 4bf92f3577b34da6a3ce929d0e0e4736
+
+Grafana (http://127.0.0.1:3000) -> Explore:
+  Tempo:  4bf92f3577b34da6a3ce929d0e0e4736
+  Loki:   {service_name=~"python-token-service|go-token-service"} | trace_id="4bf9…"</pre></div>
+    </li>
+    <li><b>Trace:</b> Grafana → Explore → <b>Tempo</b> → paste the trace id. You should see <code>POST /token</code> → the PostgreSQL <code>SELECT</code> → the gRPC call → <code>MintToken</code> in the Go service → Redis <code>set</code> and <code>xadd</code> → <code>process token event</code> from the audit worker, all in one trace.</li>
+    <li><b>Logs of that request, from both services:</b> Explore → <b>Loki</b> → paste the Loki query. Every line is JSON with <code>trace_id</code> and <code>span_id</code>, and no email address (it's replaced by a pseudonym like <code>user-ff8d9819fc0e</code>). Click <b>View trace</b> on a line to jump back to Tempo.</li>
+    <li>Check it all automatically:
+      <div class="cmd"><pre>./deploy/observability/check.sh</pre></div>
+      <div class="out"><span class="lbl">You should see (part)</span><pre>One request, end to end (Tempo + Loki)
+  PASS  API returns X-Trace-Id
+  PASS  trace includes PostgreSQL
+  PASS  trace includes the Go service
+  PASS  trace includes Redis
+  PASS  Loki: API log lines for this request
+  PASS  Loki: Go log lines for this request
+...
+passed: …  failed: 0</pre></div>
+    </li>
+  </ol>
+  <div class="why"><b>Why.</b> W3C trace context travels from the API over gRPC into the Go service, and inside the Redis Stream event to the worker, so even the asynchronous part joins the trace. Both services write the same JSON log shape to stdout and send it over OTLP to the collector, which adds pod and namespace labels and masks any email that slips through before Loki stores it.</div>
+</section>
+
+<section class="mission" id="m5" data-title="Dashboards with live metrics">
+  <header><h2>Mission 5. Dashboards with live metrics</h2><span class="time">5 minutes</span><span class="req">Metrics</span><label class="donebox"><input type="checkbox"> Done</label></header>
+  <ol class="steps">
+    <li>Send realistic traffic for a few minutes (valid callers, unknown users, bad tokens).
+      <div class="cmd"><pre>API=http://127.0.0.1:8080 bash scripts/scenarios.sh baseline 300</pre></div>
+    </li>
+    <li>Open <b>Dashboards → Token Service → Overview</b> (last 15 minutes): request rate, errors and latency (RED) for <code>/token</code>, availability, which services are up.</li>
+    <li>Open <b>Dependencies</b>: gRPC rate, errors and p95 by method and code; database pool in use, wait time and timeouts; Redis audit queue depth, pending events and processing time.</li>
+    <li>The raw series, if you want them in Prometheus (<a href="http://127.0.0.1:9091">127.0.0.1:9091</a>):
+      <div class="cmd"><pre>sum by (status) (rate(http_requests_total{handler="/token"}[1m]))
+db_pool_connections_in_use / db_pool_connections_max
+token_events_queue_depth
+histogram_quantile(0.95, sum by (le) (rate(token_event_processing_seconds_bucket[5m])))</pre></div>
+    </li>
+  </ol>
+  <div class="why"><b>Why.</b> RED for every endpoint tells me users are affected; saturation of the pool and the queue tells me what's about to be. The six dashboards are JSON in git and load the same way in Compose and on Kubernetes.</div>
+</section>
+
+<section class="mission" id="m6" data-title="Break something">
+  <header><h2>Mission 6. Break something</h2><span class="time">6 minutes</span><span class="req">Production scenarios</span><label class="donebox"><input type="checkbox"> Done</label></header>
+  <ol class="steps">
+    <li>Take Redis away and watch the Go pods.
+      <div class="cmd"><pre>kubectl -n token-service scale sts/token-service-redis --replicas=0
+kubectl -n token-service get pods -l app.kubernetes.io/name=grpc -w</pre></div>
+      <div class="out"><span class="lbl">You should see</span><pre>token-service-grpc-…   0/1   Running   0   …      ← not ready, but RESTARTS stays 0</pre></div>
+      On the Dependencies dashboard, mint errors and 5xx climb; <code>/token</code> answers <code>503</code> within the 2-second deadline.
+    </li>
+    <li>Bring it back; everything recovers on its own.
+      <div class="cmd"><pre>kubectl -n token-service scale sts/token-service-redis --replicas=1</pre></div>
+    </li>
+    <li>Or let the script do this and a node drain under load:
+      <div class="cmd"><pre>CHAOS=1 ./deploy/kind/smoke.sh</pre></div>
+      <div class="out"><span class="lbl">You should see (part)</span><pre>Resilience: Redis goes away
+  PASS  Go pods become NOT ready
+  PASS  /token -> 503 while Redis is down
+  PASS  Go pods were not restarted
+Resilience: drain a worker (node maintenance / lost zone)
+  PASS  drain respects PDBs and finishes
+  PASS  /token works with one zone</pre></div>
+    </li>
+  </ol>
+  <div class="why"><b>Why.</b> Restarting a healthy process can't fix its dependency, so the Go service's liveness ignores Redis and only readiness follows it. PodDisruptionBudgets and <code>maxUnavailable: 0</code> keep at least one API and Go pod serving during drains and rollouts.</div>
+</section>
+
+<section class="mission" id="m7" data-title="Who can talk to whom">
+  <header><h2>Mission 7. Who can talk to whom</h2><span class="time">4 minutes</span><span class="req">Bonus · Network policies</span><label class="donebox"><input type="checkbox"> Done</label></header>
+  <p>The Go service has no authentication of its own: the API checks the JWT and the user. So only the API may reach it.</p>
+  <ol class="steps">
+    <li>Run the policy checks. The control proves the real API pod can still mint; the others prove nobody else can.
+      <div class="cmd"><pre>./deploy/kind/policy-check.sh</pre></div>
+      <div class="out"><span class="lbl">You should see (part)</span><pre>Network policies
+  PASS  API pod can still mint (control)
+  PASS  pod in 'default' can't mint (F1)
+  PASS  pod in 'default' can't reach Postgres
+  PASS  pod in 'default' can't reach Loki (F9)</pre></div>
+    </li>
+    <li>See the rules: default deny, then one policy per workload.
+      <div class="cmd"><pre>kubectl -n token-service get networkpolicy
+kubectl -n token-service describe networkpolicy token-service-grpc</pre></div>
+    </li>
+  </ol>
+  <div class="why"><b>Why.</b> Egress is limited too: Postgres and Redis can't call out at all, so a compromised database can't phone home. The next layer would be mTLS between the API and the Go service, so identity doesn't depend on the network alone.</div>
+</section>
+
+<section class="mission" id="m8" data-title="Autoscaling">
+  <header><h2>Mission 8. Autoscaling</h2><span class="time">5 minutes</span><span class="req">Bonus · HPA</span><label class="donebox"><input type="checkbox"> Done</label></header>
+  <ol class="steps">
+    <li>Watch the autoscalers in one terminal, and send steady load from eight callers in another.
+      <div class="cmd"><pre>kubectl -n token-service get hpa -w</pre></div>
+      <div class="cmd"><pre>./deploy/kind/load.sh</pre></div>
+      <div class="out"><span class="lbl">You should see</span><pre>NAME                 TARGETS        MINPODS   MAXPODS   REPLICAS
+token-service-api    cpu: 142%/70%  2         5         2  →  4
+token-service-grpc   cpu: 81%/70%   2         4         2  →  3</pre></div>
+    </li>
+    <li>After the load stops, it scales back down slowly (3-minute window), one pod a minute.</li>
+  </ol>
+  <div class="why"><b>Why.</b> Scale up fast, scale down slowly, so a short lull doesn't drop capacity. The ceiling is chosen against the database: 5 API pods × 10 connections = 50, exactly the <code>token_api</code> login's connection limit. Each caller also has a rate limit, so one client can't take the capacity.</div>
+</section>
+
+<section class="mission" id="m9" data-title="GitOps with Argo CD">
+  <header><h2>Mission 9. GitOps with Argo CD</h2><span class="time">6 minutes</span><span class="req">Bonus · GitOps</span><label class="donebox"><input type="checkbox"> Done</label></header>
+  <div class="note"><b>Needs GitOps mode.</b> Start the cluster with <code>GITOPS=1 ./deploy/kind/up.sh</code> from a pushed branch. Argo CD reads GitHub, not your disk. For a private fork, <code>export GIT_TOKEN=&lt;read-only token&gt;</code> first.</div>
+  <ol class="steps">
+    <li>See what Argo CD manages: an app of apps, applied in waves (add-ons, then observability, then the app).
+      <div class="cmd"><pre>kubectl -n argocd get applications</pre></div>
+      <div class="out"><span class="lbl">You should see</span><pre>NAME                    SYNC STATUS   HEALTH STATUS
+token-platform          Synced        Healthy
+metrics-server          Synced        Healthy
+observability-config    Synced        Healthy
+loki                    Synced        Healthy
+tempo                   Synced        Healthy
+otel-collector          Synced        Healthy
+kube-prometheus-stack   Synced        Healthy
+token-service           Synced        Healthy</pre></div>
+      The UI is on <a href="https://127.0.0.1:8443">https://127.0.0.1:8443</a> while <code>ui.sh</code> runs (user <code>admin</code>; it prints the password).
+    </li>
+    <li>Drift: change the cluster by hand and watch Argo CD undo it.
+      <div class="cmd"><pre>kubectl -n token-service delete networkpolicy token-service-grpc
+sleep 60; kubectl -n token-service get networkpolicy token-service-grpc</pre></div>
+      <div class="out"><span class="lbl">You should see</span><pre>NAME                 POD-SELECTOR   AGE
+token-service-grpc   …              20s        ← recreated from git</pre></div>
+    </li>
+    <li>A change through git: raise the API's maximum replicas, push, and watch it arrive (within about a minute).
+      <div class="cmd"><pre>sed -i.bak 's/maxReplicas: 5 /maxReplicas: 6 /' deploy/helm/token-service/values.yaml && rm deploy/helm/token-service/values.yaml.bak
+git commit -am "api: allow 6 replicas" && git push
+kubectl -n token-service get hpa token-service-api -w</pre></div>
+    </li>
+  </ol>
+  <div class="why"><b>Why.</b> What's in git is what runs: automated sync with prune and self-heal. Secrets are the exception on purpose: <code>bootstrap.sh</code> creates them from local files (production: External Secrets or Sealed Secrets). CI deploys through the same path, pinned to the commit under test.</div>
+</section>
+
+<section class="mission" id="m10" data-title="SLOs and alerts">
+  <header><h2>Mission 10. SLOs and alerts</h2><span class="time">4 minutes</span><span class="req">Bonus · SLO alerting</span><label class="donebox"><input type="checkbox"> Done</label></header>
+  <div class="tablewrap"><table>
+    <thead><tr><th>SLI</th><th>SLO</th><th>Alert</th></tr></thead>
+    <tbody>
+      <tr><td><code>/token</code> calls without a 5xx</td><td>99.5% over 30 days</td><td>Fast burn 14.4× (1 h and 5 m), slow burn 6× (6 h and 30 m)</td></tr>
+      <tr><td><code>/token</code> calls under 0.5 s</td><td>95%</td><td>14.4× burn (1 h and 5 m), warning</td></tr>
+    </tbody>
+  </table></div>
+  <ol class="steps">
+    <li>Open <a href="http://127.0.0.1:9091/alerts">Prometheus → Alerts</a>: the groups <code>token-service-slo.alerts</code> and <code>token-service-dependencies.alerts</code>. Rules are in <code>deploy/helm/token-service/templates/prometheusrule.yaml</code>.</li>
+    <li>Check the recorded error ratio:
+      <div class="cmd"><pre>token:request_error_ratio:rate5m</pre></div>
+    </li>
+  </ol>
+  <details><summary>Challenge: make the fast-burn alert fire</summary>
+    <p>Keep traffic going, then stop the Go service. Every valid request now fails with 503, so after about five minutes the 1-hour error ratio passes 14.4 × 0.5% = 7.2%, and two minutes later <code>TokenAvailabilityFastBurn</code> turns from pending to firing.</p>
+    <div class="cmd"><pre>API=http://127.0.0.1:8080 bash scripts/scenarios.sh baseline 900 &
+kubectl -n token-service scale deploy/token-service-grpc --replicas=0   # plain mode; in GitOps mode Argo CD scales it back
+# ... watch http://127.0.0.1:9091/alerts, then:
+kubectl -n token-service scale deploy/token-service-grpc --replicas=2</pre></div>
+  </details>
+  <div class="why"><b>Why.</b> Alerts are on symptoms users feel, measured against an error budget, so a short blip doesn't page but a steady burn does. The short window in each pair makes the alert stop soon after the problem does. 4xx answers don't count: a bad JWT is the caller's problem.</div>
+</section>
+
+<section class="mission" id="m11" data-title="Clean up">
+  <header><h2>Clean up</h2><span class="time">1 minute</span><label class="donebox"><input type="checkbox"> Done</label></header>
+  <div class="cmd"><pre>./deploy/kind/down.sh         # deletes the cluster and everything in it
+docker compose down -v        # if Compose is still running</pre></div>
+  <p>More detail: <code>README.md</code> (design decisions, production readiness), <code>deploy/README.md</code> (Kubernetes, GitOps, policies), <code>docs/DEMO.md</code> (the live-demo script), <code>docs/SECURITY-HARDENING.md</code> (what I changed and why).</p>
+</section>
+
+<footer>Token Service · SRE assignment · this page is <code>docs/guide/index.html</code> in the repository.</footer>
+</main>
+</div>
+
+<script>
+(function () {
+  var store = {
+    get: function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+    set: function (k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+  };
+  // Theme: system by default; the button cycles light / dark / system
+  var root = document.documentElement, themeBtn = document.getElementById("theme");
+  function applyTheme(t) {
+    if (t === "light" || t === "dark") root.setAttribute("data-theme", t); else root.removeAttribute("data-theme");
+    themeBtn.textContent = t === "light" ? "Light" : t === "dark" ? "Dark" : "System";
+  }
+  var theme = store.get("lab-theme") || "system";
+  applyTheme(theme);
+  themeBtn.addEventListener("click", function () {
+    theme = theme === "system" ? "light" : theme === "light" ? "dark" : "system";
+    store.set("lab-theme", theme); applyTheme(theme);
+  });
+
+  // Mission index with done marks
+  var sections = Array.prototype.slice.call(document.querySelectorAll("section.mission"));
+  var toc = document.getElementById("toc"), links = {};
+  sections.forEach(function (s, i) {
+    var li = document.createElement("li"), a = document.createElement("a");
+    a.href = "#" + s.id;
+    a.innerHTML = '<span class="n"><span>' + (i === 0 ? "·" : i === sections.length - 1 ? "✕" : i) + "</span></span>";
+    a.appendChild(document.createTextNode(s.dataset.title));
+    li.appendChild(a); toc.appendChild(li); links[s.id] = a;
+    var box = s.querySelector(".donebox input");
+    box.id = "done-" + s.id;
+    box.checked = store.get("lab-done-" + s.id) === "1";
+    box.addEventListener("change", function () { store.set("lab-done-" + s.id, box.checked ? "1" : "0"); refresh(); });
+  });
+  function refresh() {
+    var n = 0;
+    sections.forEach(function (s) {
+      var d = s.querySelector(".donebox input").checked;
+      links[s.id].classList.toggle("done", d); if (d) n++;
+    });
+    document.getElementById("progress").textContent = n + " of " + sections.length + " done";
+  }
+  refresh();
+
+  // Highlight the mission in view
+  if ("IntersectionObserver" in window) {
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) {
+          Object.keys(links).forEach(function (k) { links[k].classList.remove("current"); });
+          links[e.target.id].classList.add("current");
+        }
+      });
+    }, { rootMargin: "-30% 0px -60% 0px" });
+    sections.forEach(function (s) { io.observe(s); });
+  }
+
+  // Copy buttons on every command block
+  document.querySelectorAll(".cmd").forEach(function (box) {
+    var pre = box.querySelector("pre"), btn = document.createElement("button");
+    btn.type = "button"; btn.textContent = "Copy"; btn.setAttribute("aria-label", "Copy command");
+    btn.addEventListener("click", function () {
+      var text = pre.innerText;
+      var done = function () { btn.textContent = "Copied"; setTimeout(function () { btn.textContent = "Copy"; }, 1500); };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, function () { select(pre); });
+      } else { select(pre); }
+    });
+    box.appendChild(btn);
+  });
+  function select(el) {
+    var r = document.createRange(); r.selectNodeContents(el);
+    var s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+  }
+})();
+</script>
+</body>
+</html>

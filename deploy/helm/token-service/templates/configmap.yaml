@@ -7,7 +7,7 @@ metadata:
     {{- include "ts.labels" (dict "root" . "component" "api") | nindent 4 }}
 data:
   # Service discovery is plain Kubernetes DNS: <service>.<namespace>.svc
-  DATABASE_URL: {{ printf "postgres://%s@%s:5432/%s" .Values.postgres.user (include "ts.name" (dict "root" . "component" "postgres")) .Values.postgres.database | quote }}
+  DATABASE_URL: {{ printf "postgres://%s@%s:5432/%s" .Values.postgres.appUser (include "ts.name" (dict "root" . "component" "postgres")) .Values.postgres.database | quote }}
   DB_PASSWORD_FILE: /etc/secrets/db/password
   # dns:/// + a headless Service = the client sees every Go pod (see main.py)
   TOKEN_SERVICE_HOST: {{ printf "dns:///%s:%v" (include "ts.name" (dict "root" . "component" "grpc")) .Values.grpc.port | quote }}

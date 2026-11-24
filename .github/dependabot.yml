@@ -1,0 +1,16 @@
+# Weekly update PRs for everything this repo pins: GitHub Actions, Go modules,
+# Python packages (uv.lock) and the Dockerfile base images.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+  - package-ecosystem: gomod
+    directory: /golang-service
+    schedule: { interval: weekly }
+  - package-ecosystem: uv
+    directory: /python-service
+    schedule: { interval: weekly }
+  - package-ecosystem: docker
+    directories: [/golang-service, /python-service]
+    schedule: { interval: weekly }

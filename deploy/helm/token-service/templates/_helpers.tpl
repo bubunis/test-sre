@@ -58,3 +58,40 @@ topologySpreadConstraints:
         {{- include "ts.selector" . | nindent 8 }}
 {{- end }}
 {{- end -}}
+
+{{/* NetworkPolicy building blocks (templates/networkpolicy.yaml) */}}
+{{- define "ts.np.pod" -}}
+podSelector:
+  matchLabels:
+    app.kubernetes.io/name: {{ .component }}
+    app.kubernetes.io/instance: {{ .root.Release.Name }}
+{{- end -}}
+{{- define "ts.np.dns" -}}
+- to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+  ports:
+    - { port: 53, protocol: UDP }
+    - { port: 53, protocol: TCP }
+{{- end -}}
+{{- define "ts.np.collector" -}}
+- to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: {{ .Values.networkPolicy.observabilityNamespace }}
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: opentelemetry-collector
+  ports:
+    - { port: 4317, protocol: TCP }
+{{- end -}}
+{{- define "ts.np.extraCIDRs" -}}
+{{- range .Values.networkPolicy.extraIngressCIDRs }}
+- from:
+    - ipBlock: { cidr: {{ . }} }
+{{- end }}
+{{- end -}}

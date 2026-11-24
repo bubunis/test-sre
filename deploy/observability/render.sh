@@ -28,4 +28,12 @@ for svc in loki tempo otel-collector; do
 done
 grep -q "name: grafana$" "$OUT/kps.yaml"        || { echo "expected Service 'grafana'"; exit 1; }
 grep -q "name: kps-prometheus$" "$OUT/kps.yaml" || { echo "expected Service 'kps-prometheus'"; exit 1; }
+# The GitOps apps pin the same chart versions (deploy/gitops/apps/values.yaml)
+source deploy/platform/versions.env
+apps=deploy/gitops/apps/values.yaml
+for v in "$LOKI_VERSION" "$TEMPO_VERSION" "$OTEL_COLLECTOR_VERSION" "$KPS_VERSION" "$METRICS_SERVER_VERSION"; do
+  grep -q "version: $v }" "$apps" || { echo "version $v is not in $apps; keep the two in step"; exit 1; }
+done
+helm template apps deploy/gitops/apps --set repoURL=https://example.com/repo.git > "$OUT/gitops-apps.yaml"
+echo "ok  gitops apps ($(grep -c '^kind: Application$' "$OUT/gitops-apps.yaml") applications)"
 echo "rendered to $OUT"
