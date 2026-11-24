@@ -1,0 +1,118 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $np := .Values.networkPolicy }}
+{{- $rel := .Release.Name }}
+# Default for this release: nothing in, nothing out. The policies below open
+# exactly what each workload needs. (Traffic from the node, such as kubelet
+# probes, is always allowed by Kubernetes.)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $rel }}-default-deny
+  labels:
+    {{- include "ts.labels" (dict "root" . "component" "network") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ $rel }}
+  policyTypes: [Ingress, Egress]
+---
+# API: reachable by clients on :8000 (NodePort / ingress, and Prometheus scraping
+# /metrics). Talks to Postgres, the Go service, the collector and DNS only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $rel }}-api
+  labels:
+    {{- include "ts.labels" (dict "root" . "component" "api") | nindent 4 }}
+spec:
+  {{- include "ts.np.pod" (dict "root" . "component" "api") | nindent 2 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports:
+        - { port: {{ .Values.api.port }}, protocol: TCP }
+    {{- include "ts.np.extraCIDRs" . | nindent 4 }}
+  egress:
+    {{- include "ts.np.dns" . | nindent 4 }}
+    - to:
+        - {{- include "ts.np.pod" (dict "root" . "component" "postgres") | nindent 10 }}
+      ports:
+        - { port: 5432, protocol: TCP }
+    - to:
+        - {{- include "ts.np.pod" (dict "root" . "component" "grpc") | nindent 10 }}
+      ports:
+        - { port: {{ .Values.grpc.port }}, protocol: TCP }
+    {{- include "ts.np.collector" . | nindent 4 }}
+    {{- with $np.apiExtraEgress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+---
+# Go service: gRPC only from the API pods (fixes "anyone can mint"), metrics
+# only from Prometheus. Talks to Redis, the collector and DNS only.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $rel }}-grpc
+  labels:
+    {{- include "ts.labels" (dict "root" . "component" "grpc") | nindent 4 }}
+spec:
+  {{- include "ts.np.pod" (dict "root" . "component" "grpc") | nindent 2 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - {{- include "ts.np.pod" (dict "root" . "component" "api") | nindent 10 }}
+      ports:
+        - { port: {{ .Values.grpc.port }}, protocol: TCP }
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $np.observabilityNamespace }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - { port: {{ .Values.grpc.metricsPort }}, protocol: TCP }
+    {{- include "ts.np.extraCIDRs" . | nindent 4 }}
+  egress:
+    {{- include "ts.np.dns" . | nindent 4 }}
+    - to:
+        - {{- include "ts.np.pod" (dict "root" . "component" "redis") | nindent 10 }}
+      ports:
+        - { port: 6379, protocol: TCP }
+    {{- include "ts.np.collector" . | nindent 4 }}
+---
+# Postgres: only the API, and it calls nobody.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $rel }}-postgres
+  labels:
+    {{- include "ts.labels" (dict "root" . "component" "postgres") | nindent 4 }}
+spec:
+  {{- include "ts.np.pod" (dict "root" . "component" "postgres") | nindent 2 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - {{- include "ts.np.pod" (dict "root" . "component" "api") | nindent 10 }}
+      ports:
+        - { port: 5432, protocol: TCP }
+    {{- include "ts.np.extraCIDRs" . | nindent 4 }}
+  egress: []
+---
+# Redis: only the Go service, and it calls nobody.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $rel }}-redis
+  labels:
+    {{- include "ts.labels" (dict "root" . "component" "redis") | nindent 4 }}
+spec:
+  {{- include "ts.np.pod" (dict "root" . "component" "redis") | nindent 2 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - {{- include "ts.np.pod" (dict "root" . "component" "grpc") | nindent 10 }}
+      ports:
+        - { port: 6379, protocol: TCP }
+    {{- include "ts.np.extraCIDRs" . | nindent 4 }}
+  egress: []
+{{- end }}

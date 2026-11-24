@@ -28,7 +28,6 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
-	"go.opentelemetry.io/otel/exporters/stdout/stdoutlog"
 	"go.opentelemetry.io/otel/log/global"
 	"go.opentelemetry.io/otel/propagation"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
@@ -38,6 +37,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/status"
 )
 
@@ -102,13 +102,10 @@ func initOtel() func() {
 		}
 	}
 
-	// Fallback to stdout for logs if no OTLP endpoint
+	// No OTLP endpoint: export nothing. The JSON handler already writes every
+	// log line to stdout, so a stdout exporter here would print each line twice.
 	if lp == nil {
-		stdoutExporter, _ := stdoutlog.New()
-		lp = sdklog.NewLoggerProvider(
-			sdklog.WithProcessor(sdklog.NewBatchProcessor(stdoutExporter)),
-			sdklog.WithResource(res),
-		)
+		lp = sdklog.NewLoggerProvider(sdklog.WithResource(res))
 	}
 
 	otel.SetTracerProvider(tp)
@@ -134,6 +131,12 @@ func (s *server) MintToken(ctx context.Context, req *pb.MintTokenRequest) (*pb.M
 
 	// Server decides the lifetime: 0 means the default, out-of-range is refused,
 	// and a token can never be stored without an expiry.
+	if err := tokenpolicy.ValidateEmail(req.UserEmail); err != nil {
+		tokensTotal.WithLabelValues("rejected").Inc()
+		logger.WarnContext(ctx, "invalid user_email", "error", err.Error())
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
 	ttl, err := tokenpolicy.TTL(req.TtlSeconds)
 	if err != nil {
 		tokensTotal.WithLabelValues("rejected").Inc()
@@ -239,6 +242,13 @@ func main() {
 	s := grpc.NewServer(
 		grpc.StatsHandler(otelgrpc.NewServerHandler()),
 		grpc.ChainUnaryInterceptor(metricsInterceptor), // see grpc_metrics.go
+		// Close each client connection after a few minutes (in-flight calls finish).
+		// Clients then reconnect and re-resolve DNS, so new pods get traffic after
+		// a scale-up or rollout instead of every client staying pinned to old pods.
+		grpc.KeepaliveParams(keepalive.ServerParameters{
+			MaxConnectionAge:      2 * time.Minute,
+			MaxConnectionAgeGrace: 30 * time.Second,
+		}),
 	)
 	pb.RegisterTokenServiceServer(s, &server{rdb: rdb})
 	hs := startHealth(ctx, s, rdb)

@@ -4,10 +4,10 @@
 # Names of Secrets / ConfigMaps created outside the chart.
 # Each workload mounts only the Secret it needs.
 existingSecrets:
-  db: token-db            # key: password
+  db: token-db            # keys: password (superuser, Postgres only), app-password (API)
   redis: token-redis      # keys: password, redis.conf
   jwt: token-jwt          # key: public.pem
-dbInitConfigMap: token-db-init   # key: init.sql (database/init.sql)
+dbInitConfigMap: token-db-init   # keys: 01-schema.sql, 02-app-role.sh (database/)
 
 # Shared settings for every pod
 podSecurity:
@@ -25,6 +25,27 @@ otel:
   # as JSON). deploy/kind/up.sh sets it when the observability stack is installed.
   endpoint: ""
 
+# Who may talk to whom. Each workload accepts traffic only from the pods that
+# need it, and sends only where it has to (plus DNS). See templates/networkpolicy.yaml.
+networkPolicy:
+  enabled: true
+  observabilityNamespace: observability   # where Prometheus and the OTel collector run
+  # Extra sources allowed into every pod, e.g. the node network if a CNI treats
+  # kubelet probes as pod traffic. Empty on kind: node traffic is always allowed.
+  extraIngressCIDRs: []
+  # Extra destinations for the API, e.g. the identity provider when JWT_JWKS_URL is set:
+  #   - to: [{ipBlock: {cidr: 203.0.113.10/32}}]
+  #     ports: [{port: 443, protocol: TCP}]
+  apiExtraEgress: []
+
+# Recording rules and alerts for the /token SLOs (PrometheusRule; only rendered
+# when the cluster has the CRD, i.e. kube-prometheus-stack is installed).
+slo:
+  enabled: true
+  availability: 0.995      # 99.5% of /token calls don't fail with a 5xx (30-day window)
+  latencySeconds: 0.5      # a bucket of the API's latency histogram (0.1, 0.5 or 1)
+  latencyTarget: 0.95      # 95% of /token calls finish within latencySeconds
+
 metrics:
   # ServiceMonitors for Prometheus (kube-prometheus-stack). Only rendered when
   # the cluster has the ServiceMonitor CRD.
@@ -37,7 +58,12 @@ api:
     repository: token-api
     tag: dev
     pullPolicy: IfNotPresent
-  replicas: 2
+  replicas: 2             # used only when autoscaling is off
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 5          # x DB_POOL_MAX (10) = 50 = the token_api connection limit
+    cpuUtilization: 70      # % of the CPU request
   uid: 10001
   port: 8000
   service:
@@ -65,7 +91,12 @@ grpc:
     repository: token-grpc
     tag: dev
     pullPolicy: IfNotPresent
-  replicas: 2             # both pods share the Redis queue through the consumer group
+  replicas: 2             # used only when autoscaling is off; pods share the Redis queue
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 4
+    cpuUtilization: 70
   uid: 65532
   port: 50051
   metricsPort: 9090
@@ -79,7 +110,8 @@ postgres:
   image: postgres:15-alpine
   uid: 70                 # "postgres" user in the alpine image
   database: tokendb
-  user: postgres
+  user: postgres          # superuser: used only by Postgres itself for setup
+  appUser: token_api      # what the API logs in as: SELECT on three tables
   storage: 1Gi
   storageClass: ""        # empty = cluster default (kind: "standard")
   resources:

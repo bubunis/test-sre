@@ -7,7 +7,9 @@ metadata:
   labels:
     {{- include "ts.labels" $c | nindent 4 }}
 spec:
+  {{- if not $v.autoscaling.enabled }}
   replicas: {{ $v.replicas }}
+  {{- end }}
   revisionHistoryLimit: 3
   strategy:
     type: RollingUpdate
@@ -80,6 +82,9 @@ spec:
           secret:
             secretName: {{ .Values.existingSecrets.db }}
             defaultMode: 0440
+            items:
+              - key: app-password   # the API's read-only login, not the superuser
+                path: password
         - name: jwt-secret
           secret:
             secretName: {{ .Values.existingSecrets.jwt }}

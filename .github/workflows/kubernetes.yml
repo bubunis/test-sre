@@ -41,20 +41,31 @@ jobs:
           helm template token-service deploy/helm/token-service > /dev/null
           bash deploy/observability/render.sh
 
-      - name: Create cluster, build, deploy (app + observability)
+      - name: Create cluster, build images, deploy everything through Argo CD (GitOps)
+        env:
+          GITOPS: "1"
+          # Argo CD follows this exact commit, read with the job's own read-only token
+          GITOPS_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+          GIT_TOKEN: ${{ github.token }}
         run: bash deploy/kind/up.sh
 
       - name: Smoke, security and resilience checks
         run: CHAOS=1 bash deploy/kind/smoke.sh
 
-      - name: Observability checks (metrics, logs, traces, dashboards)
+      - name: Observability checks (metrics, logs, traces, dashboards, SLO rules)
         run: bash deploy/observability/check.sh
+
+      - name: Policy checks (network policies, autoscaling, Argo CD sync and self-heal)
+        run: bash deploy/kind/policy-check.sh
 
       - name: Diagnostics (on failure)
         if: failure()
         run: |
           bash deploy/kind/debug.sh || true
           NS=observability bash deploy/kind/debug.sh || true
+          kubectl get networkpolicy -A || true
+          kubectl -n argocd get applications -o wide || true
+          kubectl -n argocd describe applications | grep -E "^Name:|Message:|Status:" || true
 
       - name: Delete cluster
         if: always()

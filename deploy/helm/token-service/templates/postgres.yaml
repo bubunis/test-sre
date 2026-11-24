@@ -34,6 +34,11 @@ spec:
               value: {{ $v.database | quote }}
             - name: POSTGRES_PASSWORD_FILE
               value: /etc/secrets/db/password
+            # read-only login for the API, created by 02-app-role.sh on first start
+            - name: APP_DB_USER
+              value: {{ $v.appUser | quote }}
+            - name: APP_DB_PASSWORD_FILE
+              value: /etc/secrets/db/app-password
             # a subfolder, because the volume root may contain lost+found
             - name: PGDATA
               value: /var/lib/postgresql/data/pgdata
