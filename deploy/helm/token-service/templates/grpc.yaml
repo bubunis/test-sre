@@ -7,7 +7,9 @@ metadata:
   labels:
     {{- include "ts.labels" $c | nindent 4 }}
 spec:
+  {{- if not $v.autoscaling.enabled }}
   replicas: {{ $v.replicas }}
+  {{- end }}
   revisionHistoryLimit: 3
   strategy:
     type: RollingUpdate

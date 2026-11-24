@@ -1,0 +1,39 @@
+{{- $c := .Values.charts }}
+# Sync waves: -3 project, -2 cluster add-ons and dashboards, -1 observability,
+# 0 the app (its ServiceMonitors and rules need the Prometheus CRDs from wave -1).
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: token-platform
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+spec:
+  description: Token service and the platform it runs on
+  sourceRepos:
+    {{- $repos := list .Values.repoURL }}
+    {{- range $c }}{{ $repos = append $repos .repo }}{{ end }}
+    {{- range uniq $repos }}
+    - {{ . }}
+    {{- end }}
+  destinations:
+    - { server: https://kubernetes.default.svc, namespace: token-service }
+    - { server: https://kubernetes.default.svc, namespace: observability }
+    - { server: https://kubernetes.default.svc, namespace: kube-system }
+  # kube-prometheus-stack and metrics-server install CRDs, RBAC, webhooks and an APIService
+  clusterResourceWhitelist:
+    - { group: "*", kind: "*" }
+---
+{{ include "app" (dict "root" . "name" "metrics-server" "wave" -2 "namespace" "kube-system" "chart" $c.metricsServer "valuesFile" "deploy/platform/values/metrics-server.yaml") }}
+---
+{{ include "app" (dict "root" . "name" "observability-config" "wave" -2 "namespace" "observability" "path" "deploy/gitops/observability-config") }}
+---
+{{ include "app" (dict "root" . "name" "loki" "wave" -1 "namespace" "observability" "chart" $c.loki "valuesFile" "deploy/observability/values/loki.yaml") }}
+---
+{{ include "app" (dict "root" . "name" "tempo" "wave" -1 "namespace" "observability" "chart" $c.tempo "valuesFile" "deploy/observability/values/tempo.yaml") }}
+---
+{{ include "app" (dict "root" . "name" "otel-collector" "wave" -1 "namespace" "observability" "chart" $c.otelCollector "valuesFile" "deploy/observability/values/otel-collector.yaml") }}
+---
+{{ include "app" (dict "root" . "name" "kube-prometheus-stack" "release" "kps" "wave" -1 "namespace" "observability" "chart" $c.kps "valuesFile" "deploy/observability/values/kube-prometheus-stack.yaml" "serverSide" true) }}
+---
+{{ include "app" (dict "root" . "name" "token-service" "wave" 0 "namespace" "token-service" "path" "deploy/helm/token-service" "helm" (dict "releaseName" "token-service" "valuesObject" (dict "api" (dict "image" (dict "tag" .Values.imageTag)) "grpc" (dict "image" (dict "tag" .Values.imageTag)) "otel" (dict "endpoint" "http://otel-collector.observability.svc:4317") "metrics" (dict "serviceMonitor" (dict "enabled" true))))) }}

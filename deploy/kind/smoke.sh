@@ -52,6 +52,8 @@ check "no JWT -> 401"                  test "$(code alice@example.com)" = 401
 check "wrong scope -> 403"             test "$(code alice@example.com -H "Authorization: Bearer $(jwt login-service profile)")" = 403
 check "expired JWT -> 401"             test "$(code alice@example.com -H "Authorization: Bearer $(jwt login-service token:mint -120)")" = 401
 check "unknown user -> 404"            test "$(code nobody@example.com -H "Authorization: Bearer $JWT")" = 404
+check "300-char email -> 422"          test "$(code "$(printf 'a%.0s' $(seq 1 300))@example.com" -H "Authorization: Bearer $JWT")" = 422
+check "email is case-insensitive"      test "$(code Alice@Example.COM -H "Authorization: Bearer $JWT")" = 200
 
 RESP=$(curl -s -X POST "$API/token" -H "Authorization: Bearer $JWT" \
          -H "Content-Type: application/json" -d '{"user_email":"alice@example.com"}')
@@ -80,26 +82,37 @@ check "no pod runs as root"            test -z "$root_pods"
 check "API root filesystem read-only"  bash -c "! kubectl -n $NS exec deploy/token-service-api -- touch /app/x"
 check "API can't see Redis secret"     bash -c "! kubectl -n $NS exec deploy/token-service-api -- ls /etc/secrets/redis"
 check "no service account token"       bash -c "! kubectl -n $NS exec deploy/token-service-api -- ls /var/run/secrets/kubernetes.io"
+psql() { k exec sts/token-service-postgres -- psql -U postgres -d tokendb -tAc "$1" 2>/dev/null; }
+check "API logs in as token_api"       bash -c "kubectl -n $NS get cm token-service-api -o jsonpath='{.data.DATABASE_URL}' | grep -q '//token_api@'"
+check "token_api is not a superuser"   test "$(psql "select rolsuper from pg_roles where rolname='token_api'")" = f
+check "token_api can't write"          test "$(psql "select has_table_privilege('token_api','users','INSERT')")" = f
+check "Redis has maxmemory set"        bash -c "kubectl -n $NS exec sts/token-service-redis -- sh -c 'REDISCLI_AUTH=\"\$(cat /etc/secrets/redis/password)\" redis-cli CONFIG GET maxmemory' | grep -qx 209715200"
 
 echo "Load balancing (info)"
 for _ in $(seq 1 20); do code alice@example.com -H "Authorization: Bearer $JWT" >/dev/null; done
 for p in $(k get pods -l app.kubernetes.io/name=grpc -o name); do
-  n=$(kubectl get --raw "/api/v1/namespaces/$NS/pods/${p#pod/}:9090/proxy/metrics" 2>/dev/null \
+  # port-forward goes through the pod's own node, which network policies always allow
+  k port-forward "$p" 19091:9090 >/dev/null 2>&1 & pf=$!; sleep 2
+  n=$(curl -s http://127.0.0.1:19091/metrics \
       | awk '/^grpc_server_handled_total/ && /MintToken/ && /grpc_code="OK"/ {s+=$2} END {print s+0}')
+  kill $pf 2>/dev/null; wait $pf 2>/dev/null
   echo "  ${p#pod/}: $n MintToken calls"
 done
 echo "  (both should be > 0; an API pod that started before the 2nd Go pod picks it up within 2 min)"
 
 if [[ "${CHAOS:-0}" == 1 ]]; then
-  echo "Resilience: Redis goes away"
+  echo "Resilience: Redis stops answering"
   restarts() { k get pods -l app.kubernetes.io/name=grpc -o jsonpath='{range .items[*]}{.status.containerStatuses[0].restartCount}{" "}{end}'; }
   before=$(restarts)
-  k scale sts/token-service-redis --replicas=0 >/dev/null
-  check "Go pods become NOT ready"     k wait pod -l app.kubernetes.io/name=grpc --for=condition=Ready=false --timeout=60s
+  # Freeze Redis for 45 s instead of scaling it to 0: in GitOps mode Argo CD's
+  # self-heal would put the replica back within seconds, so the outage would never happen.
+  k exec sts/token-service-redis -- sh -c \
+    'REDISCLI_AUTH="$(cat /etc/secrets/redis/password)" redis-cli CLIENT PAUSE 45000 ALL' >/dev/null
+  check "Go pods become NOT ready"     k wait pod -l app.kubernetes.io/name=grpc --for=condition=Ready=false --timeout=40s
   check "/token -> 503 while Redis is down" test "$(code alice@example.com -H "Authorization: Bearer $JWT")" = 503
   check "Go pods were not restarted"   test "$(restarts)" = "$before"
-  k scale sts/token-service-redis --replicas=1 >/dev/null
-  check "Redis back"                   k rollout status sts/token-service-redis --timeout=90s
+  # the pause ends by itself
+  check "Redis back"                   k wait pod -l app.kubernetes.io/name=redis --for=condition=Ready --timeout=90s
   check "Go pods ready again"          k wait pod -l app.kubernetes.io/name=grpc --for=condition=Ready --timeout=60s
   check "/token works again"           eventually_200
 fi

@@ -3,6 +3,8 @@
 # (Apple Silicon or Intel), Linux, and GitHub Actions.
 # Usage (from the repo root):  ./deploy/kind/up.sh
 #   OBSERVABILITY=0 ./deploy/kind/up.sh   # app only, skip Prometheus/Grafana/Loki/Tempo
+#   PLATFORM=0 ./deploy/kind/up.sh        # skip metrics-server
+#   GITOPS=1 ./deploy/kind/up.sh          # let Argo CD deploy everything from git (push your branch first)
 # Re-run it after a code change: it rebuilds, reloads and rolls out the new images.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -13,6 +15,7 @@ NS=token-service
 RELEASE=token-service
 API_PORT=8080                       # must match hostPort in deploy/kind/cluster.yaml
 OBSERVABILITY="${OBSERVABILITY:-1}"
+PLATFORM="${PLATFORM:-1}"
 HELM_TIMEOUT="${HELM_TIMEOUT:-5m}"
 [[ $IN_CI == 1 ]] && HELM_TIMEOUT="${HELM_TIMEOUT_CI:-8m}"   # shared runners are slower
 
@@ -33,7 +36,8 @@ if (( mem_gb < want_gb - 1 || cpus < 4 )); then
 fi
 
 # 1. Secrets on this machine (same files Docker Compose uses; never committed)
-[[ -f secrets/postgres_password.txt ]] || bash scripts/init-secrets.sh
+# Always run: it only creates what's missing, and rewrites redis.conf
+bash scripts/init-secrets.sh >/dev/null
 
 # 2. Cluster
 if ! kind get clusters 2>/dev/null | grep -qx "$CLUSTER"; then
@@ -80,17 +84,32 @@ kubectl label namespace "$NS" --overwrite \
 #    One Secret per purpose, so each pod mounts only what it needs.
 apply() { kubectl -n "$NS" apply --server-side --force-conflicts -f - >/dev/null; }
 kubectl -n "$NS" create secret generic token-db \
-  --from-file=password=secrets/postgres_password.txt --dry-run=client -o yaml | apply
+  --from-file=password=secrets/postgres_password.txt \
+  --from-file=app-password=secrets/app_db_password.txt --dry-run=client -o yaml | apply
 kubectl -n "$NS" create secret generic token-redis \
   --from-file=password=secrets/redis_password.txt \
   --from-file=redis.conf=secrets/redis.conf --dry-run=client -o yaml | apply
 kubectl -n "$NS" create secret generic token-jwt \
   --from-file=public.pem=secrets/jwt_dev_public.pem --dry-run=client -o yaml | apply
 kubectl -n "$NS" create configmap token-db-init \
-  --from-file=init.sql=database/init.sql --dry-run=client -o yaml | apply
+  --from-file=01-schema.sql=database/init.sql \
+  --from-file=02-app-role.sh=database/app-role.sh --dry-run=client -o yaml | apply
 echo "secrets and db seed applied"
 
-# 6. Observability first: the app chart's ServiceMonitors need its CRDs,
+# GitOps mode: Argo CD installs metrics-server, the observability stack and
+# the app from the pushed branch; this script only provides images and secrets.
+if [[ "${GITOPS:-0}" == 1 ]]; then
+  TAG="$TAG" bash deploy/gitops/bootstrap.sh
+  kubectl -n "$NS" get pods -o wide
+  echo
+  echo "API: http://127.0.0.1:$API_PORT   Argo CD UI: ./deploy/observability/ui.sh"
+  exit 0
+fi
+
+# 6. Cluster add-on: metrics-server (CPU numbers for the HPAs)
+[[ $PLATFORM == 1 ]] && bash deploy/platform/install.sh
+
+# 6b. Observability first: the app chart's ServiceMonitors need its CRDs,
 #    and the apps should find the collector when they start
 APP_EXTRA=()
 if [[ $OBSERVABILITY == 1 ]]; then

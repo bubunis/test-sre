@@ -20,6 +20,11 @@ from opentelemetry import trace
 
 EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
+# The email pattern takes time that grows with the square of the text's length,
+# and it runs on every log line. Longer text is cut first, so one huge value
+# can't stall the process (a 64 KB value took 3.4 s before this limit).
+MAX_REDACT_CHARS = 2048
+
 # Attributes every LogRecord has; anything else was passed with extra={...}
 _STANDARD = set(vars(logging.LogRecord("", 0, "", 0, "", None, None))) | {"message", "asctime", "taskName"}
 
@@ -33,6 +38,12 @@ def user_ref(email: str) -> str:
 
 
 def redact(text: str) -> str:
+    if len(text) > MAX_REDACT_CHARS:
+        head = text[:MAX_REDACT_CHARS]
+        # drop a word cut in half at the limit, in case it is part of an address
+        if not head[-1].isspace() and not text[MAX_REDACT_CHARS].isspace():
+            head = head.rsplit(None, 1)[0] if " " in head or "\n" in head else ""
+        text = head + f" ...[truncated {len(text) - len(head)} chars]"
     return EMAIL.sub(lambda m: user_ref(m.group(0)), text)
 
 

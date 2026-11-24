@@ -1,10 +1,10 @@
 # Security hardening log
 
-This is my running log of the security work on the token service: what I changed, why, how I tested it, and what's still open. I'm keeping everything Docker-only (no cloud, no Kubernetes) and doing one change at a time, each on its own branch and merged only when CI passes.
+This is my running log of the security work on the token service: what I changed, why, how I tested it, and what's still open. It started Docker-only; the later steps are on Kubernetes (a local kind cluster). One change at a time, each on its own branch and merged only when CI passes.
 
 I used Claude to help draft some of the code, tests and docs. I reviewed every change, ran the tests myself, and made the calls on what to fix and in which order.
 
-*Last updated: 16 November 2026*
+*Last updated: 24 November 2026*
 
 ## Where things stand
 
@@ -12,8 +12,10 @@ I used Claude to help draft some of the code, tests and docs. I reviewed every c
 - **Step 2 – token lifetime cap:** done, merged
 - **Step 2b – network isolation:** deferred (see below)
 - **Step 3 – JWT auth for callers:** done, merged
-- **Step 4 – non-root containers, pinned images:** not started
-- **Step 5 – least-privilege DB user:** not started
+- **Step 4 – non-root containers, multi-stage images:** done (distroless Go image, uid 65532; Python uid 10001)
+- **Step 5 – least-privilege DB user:** done (`token_api`, read-only, in the review fixes)
+- **Kubernetes – restricted pods, NetworkPolicies:** done (Step 2b's goal, reached on Kubernetes)
+- **QA review fixes:** done for the high and medium findings (see below)
 
 ## What I started with
 
@@ -89,21 +91,30 @@ Why these choices:
 
 What JWT doesn't solve yet: it proves *who* is calling, not *which users* that caller is allowed to request tokens for. That's decision D2, per-client grants, and it's still open.
 
+## Later steps, in short
+
+**Non-root containers.** Both images are multi-stage. Go runs from `distroless/static` as uid 65532 (no shell, so `token-server -healthcheck` checks itself); Python runs as uid 10001 and the app files stay owned by root. On Kubernetes every pod is non-root with a read-only root filesystem, no capabilities, no privilege escalation and the default seccomp profile, and the namespace enforces the `restricted` Pod Security level.
+
+**Network isolation, on Kubernetes.** NetworkPolicies allow only the paths the app needs: API → Go service, API → Postgres, Go service → Redis, both → the collector, Prometheus → metrics. I proved the old hole first: a pod in another namespace minted a token straight from the Go service. After the policies, the same call times out, while the real API pod still mints (`deploy/kind/policy-check.sh`). With GitOps on, Argo CD restores a NetworkPolicy within a minute if someone deletes it by hand.
+
+**QA review fixes.** A review of the whole repo found, among others: the API used the Postgres superuser; the email-masking regex took 3.4 s on a 64 KB value (quadratic), and the email field had no length limit; Redis had no memory cap and `/token` no rate limit; a Postgres outage returned 500 instead of 503. Fixed: the read-only `token_api` login, a 254-character limit and capped redaction (1 MB now takes milliseconds), `maxmemory 200mb` with `volatile-ttl`, a per-caller token bucket (429 with `Retry-After`), and 503 on database errors. Each fix has a unit test or a check in `smoke.sh`.
+
 ## Still open
 
 - **Any authenticated caller can request any user.** Needs per-client grants (D2).
-- **Any container on the Docker network can call the Go service directly.** Step 2b, or mTLS.
-- **Traffic between containers isn't encrypted.** Planned with mTLS.
+- **In Docker Compose, any container on the network can call the Go service directly.** Closed on Kubernetes by NetworkPolicies; mTLS would close it everywhere.
+- **Traffic between services isn't encrypted.** Planned with mTLS.
 - **Tokens are stored in Redis as the raw key.** Anyone who can read Redis can copy a valid token. I want to store a SHA-256 of the token instead.
-- **Containers still run as root, and the API still uses the Postgres superuser.** These are Steps 4 and 5.
-- **`/metrics` is on the public port, and there are no real healthchecks.** CI still waits with `sleep 15`.
+- **`/metrics` and `/docs` are on the public port, and the Compose file has no healthchecks.** CI still waits with `sleep 15`.
+- **Permissions aren't stored with the token, and stuck audit events aren't retried.** From the QA review, planned.
+- **The email pseudonym in logs is an unkeyed hash.** Someone with a list of emails could reverse it; an HMAC with a secret key fixes that.
 - **Secret rotation is manual.**
 
 ## Next
 
-1. **Step 4:** non-root containers, images pinned by digest, a `.dockerignore` (the Python image currently copies in `.venv`).
-2. **Step 5:** a `token_api` Postgres role with `SELECT` on the four permission tables only.
-3. **After that:** per-client grants, hashed token storage, then network isolation and mTLS.
+1. mTLS between the API and the Go service.
+2. Per-client grants, hashed token storage, permissions stored with the token.
+3. Compose hardening (healthchecks, read-only, pinned images) and image scanning in CI.
 
 ## Commands I keep reaching for
 
