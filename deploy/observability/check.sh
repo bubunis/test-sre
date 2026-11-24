@@ -139,8 +139,9 @@ retry 60 datasources_loaded
 for uid in prometheus loki tempo; do
   check "data source '$uid'"               grep -q "\"uid\":\"$uid\"" <<<"$DS"
 done
-dashboards() { test "$(curl -s -u "$GF_AUTH" "$GRAFANA/api/search?type=dash-db&query=Token" | grep -o '"uid":' | wc -l)" -ge 6; }
-check "6 token dashboards loaded"          retry 60 dashboards
+dashboards() { test "$(curl -s -u "$GF_AUTH" "$GRAFANA/api/search?type=dash-db&query=Token" | grep -o '"uid":' | wc -l)" -ge 7; }
+check "7 token dashboards loaded"          retry 60 dashboards
+check "SLO dashboard loaded"              curl -sf -u "$GF_AUTH" -o /dev/null "$GRAFANA/api/dashboards/uid/token-slo"
 
 echo
 echo "passed: $pass  failed: $fail"

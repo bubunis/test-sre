@@ -292,7 +292,7 @@ token_events_queue_depth
 histogram_quantile(0.95, sum by (le) (rate(token_event_processing_seconds_bucket[5m])))</pre></div>
     </li>
   </ol>
-  <div class="why"><b>Why.</b> RED for every endpoint tells me users are affected; saturation of the pool and the queue tells me what's about to be. The six dashboards are JSON in git and load the same way in Compose and on Kubernetes.</div>
+  <div class="why"><b>Why.</b> RED for every endpoint tells me users are affected; saturation of the pool and the queue tells me what's about to be. The seven dashboards are JSON in git and load the same way in Compose and on Kubernetes.</div>
 </section>
 
 <section class="mission" id="m6" data-title="Break something">
@@ -398,6 +398,7 @@ kubectl -n token-service get hpa token-service-api -w</pre></div>
   </table></div>
   <ol class="steps">
     <li>Open <a href="http://127.0.0.1:9091/alerts">Prometheus → Alerts</a>: the groups <code>token-service-slo.alerts</code> and <code>token-service-dependencies.alerts</code>. Rules are in <code>deploy/helm/token-service/templates/prometheusrule.yaml</code>.</li>
+    <li>Open <b>Grafana → Dashboards → Token Service → SLOs</b>: SLI and error budget left over the 30-day window, burndown, burn rate per alert window, firing SLO alerts, and the error budget policy.</li>
     <li>Check the recorded error ratio:
       <div class="cmd"><pre>token:request_error_ratio:rate5m</pre></div>
     </li>

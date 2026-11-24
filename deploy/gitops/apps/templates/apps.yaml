@@ -26,7 +26,7 @@ spec:
 ---
 {{ include "app" (dict "root" . "name" "metrics-server" "wave" -2 "namespace" "kube-system" "chart" $c.metricsServer "valuesFile" "deploy/platform/values/metrics-server.yaml") }}
 ---
-{{ include "app" (dict "root" . "name" "observability-config" "wave" -2 "namespace" "observability" "path" "deploy/gitops/observability-config") }}
+{{ include "app" (dict "root" . "name" "observability-config" "wave" -2 "namespace" "observability" "path" "deploy/gitops/observability-config" "serverSide" true) }}
 ---
 {{ include "app" (dict "root" . "name" "loki" "wave" -1 "namespace" "observability" "chart" $c.loki "valuesFile" "deploy/observability/values/loki.yaml") }}
 ---
