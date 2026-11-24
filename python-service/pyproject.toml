@@ -3,20 +3,21 @@ name = "token-service"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-    "fastapi==0.128.0",
+    "fastapi>=0.128.0",
+    "starlette>=1.3.1", # pip-audit: PYSEC-2026-161/248/249/2280/2281
     "uvicorn==0.40.0",
     "psycopg2-binary==2.9.11",
     "grpcio==1.76.0",
     "grpcio-tools==1.76.0",
     "prometheus-client==0.24.1",
-    "prometheus-fastapi-instrumentator==7.1.0",
-    "opentelemetry-api==1.39.1",
-    "opentelemetry-sdk==1.39.1",
-    "opentelemetry-exporter-otlp==1.39.1",
-    "opentelemetry-instrumentation-fastapi==0.60b1",
-    "opentelemetry-instrumentation-grpc==0.60b1",
-    "opentelemetry-instrumentation-psycopg2==0.60b1",
-    "opentelemetry-exporter-otlp-proto-grpc==1.39.1",
+    "prometheus-fastapi-instrumentator>=7.1.0",
+    "opentelemetry-api==1.45.2", # pip-audit: GHSA-xcq7-p3pf-p88h, GHSA-mf5v-w3w3-f6cg
+    "opentelemetry-sdk==1.45.2",
+    "opentelemetry-exporter-otlp==1.45.2",
+    "opentelemetry-instrumentation-fastapi==0.66b2",
+    "opentelemetry-instrumentation-grpc==0.66b2",
+    "opentelemetry-instrumentation-psycopg2==0.66b2",
+    "opentelemetry-exporter-otlp-proto-grpc==1.45.2",
     "pyjwt[crypto]>=2.10,<3",
 ]
 
