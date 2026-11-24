@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Prints what you need when pods don't come up. CI runs it on failure.
-NS=token-service
+NS="${NS:-token-service}"   # NS=observability ./deploy/kind/debug.sh for the stack
 set -x
 kubectl get nodes -o wide -L topology.kubernetes.io/zone
 kubectl describe nodes | grep -E "^Name:|Taints:|Unschedulable:|Allocated resources" -A0

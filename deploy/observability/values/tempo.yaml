@@ -1,0 +1,22 @@
+# Tempo single binary, local storage on a PVC. Receives OTLP from the collector.
+fullnameOverride: tempo
+tempo:
+  reportingEnabled: false
+  retention: 72h
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+    # The chart's default Jaeger/OpenCensus receivers stay: its templates need
+    # them to exist. Unused - the collector sends OTLP only.
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits:   { memory: 512Mi }
+persistence:
+  enabled: true
+  size: 2Gi
+tempoQuery:
+  enabled: false          # Jaeger UI; Grafana is the UI

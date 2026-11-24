@@ -24,7 +24,7 @@ jobs:
         # offers it for free, i.e. public repositories
         runner: ${{ github.event.repository.private && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest", "ubuntu-24.04-arm"]') }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -33,23 +33,29 @@ jobs:
         run: bash scripts/init-secrets.sh
 
       - name: Install kind, kubectl, helm (pinned, checksum-verified)
-        run: ./deploy/kind/install-tools.sh
+        run: bash deploy/kind/install-tools.sh
 
-      - name: Lint and render the chart
+      - name: Lint and render the charts
         run: |
           helm lint deploy/helm/token-service
           helm template token-service deploy/helm/token-service > /dev/null
+          bash deploy/observability/render.sh
 
-      - name: Create cluster, build, deploy
-        run: ./deploy/kind/up.sh
+      - name: Create cluster, build, deploy (app + observability)
+        run: bash deploy/kind/up.sh
 
       - name: Smoke, security and resilience checks
-        run: CHAOS=1 ./deploy/kind/smoke.sh
+        run: CHAOS=1 bash deploy/kind/smoke.sh
+
+      - name: Observability checks (metrics, logs, traces, dashboards)
+        run: bash deploy/observability/check.sh
 
       - name: Diagnostics (on failure)
         if: failure()
-        run: ./deploy/kind/debug.sh
+        run: |
+          bash deploy/kind/debug.sh || true
+          NS=observability bash deploy/kind/debug.sh || true
 
       - name: Delete cluster
         if: always()
-        run: ./deploy/kind/down.sh || true
+        run: bash deploy/kind/down.sh || true
