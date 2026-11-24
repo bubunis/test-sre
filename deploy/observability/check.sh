@@ -17,13 +17,25 @@ retry() {  # retry <seconds> <command...>: data needs a few seconds to arrive
   until "$@" >/dev/null 2>&1; do (( SECONDS < until )) || return 1; sleep 3; done
 }
 
-# Local ports for the checks only (not the UI ports, so ui.sh can stay running)
-kubectl -n $OBS port-forward --address 127.0.0.1 svc/kps-prometheus 19090:9090 >/dev/null 2>&1 &
-kubectl -n $OBS port-forward --address 127.0.0.1 svc/loki 13100:3100 >/dev/null 2>&1 &
-kubectl -n $OBS port-forward --address 127.0.0.1 svc/tempo 13200:3200 >/dev/null 2>&1 &
-kubectl -n $OBS port-forward --address 127.0.0.1 svc/grafana 13000:80 >/dev/null 2>&1 &
-trap 'kill $(jobs -p) 2>/dev/null' EXIT
-sleep 3
+# Local ports for the checks only (not the UI ports, so ui.sh can stay running).
+# A port-forward is tied to one pod: if that pod is replaced (for example after
+# smoke.sh's node drain) the forward dies. forward() (re)starts one and waits
+# until it answers, and every section calls it, so a replaced pod is picked up.
+declare -a PF_PIDS=()
+trap 'kill ${PF_PIDS[@]+"${PF_PIDS[@]}"} 2>/dev/null' EXIT
+forward() {  # forward <service> <local port> <remote port> <health path>
+  local svc=$1 lp=$2 rp=$3 path=$4 i
+  curl -s -o /dev/null -m 2 "http://127.0.0.1:$lp$path" && return 0
+  pkill -f "port-forward.*svc/$svc $lp:$rp" 2>/dev/null
+  kubectl -n "$OBS" rollout status "$(kubectl -n "$OBS" get deploy,sts -o name | grep -m1 "/$svc$" || echo "deploy/$svc")" --timeout=180s >/dev/null 2>&1
+  kubectl -n "$OBS" port-forward --address 127.0.0.1 "svc/$svc" "$lp:$rp" >/dev/null 2>&1 &
+  PF_PIDS+=($!)
+  for i in $(seq 1 30); do
+    curl -s -o /dev/null -m 2 "http://127.0.0.1:$lp$path" && return 0
+    sleep 2
+  done
+  echo "  (port-forward to $svc did not come up)"; return 1
+}
 PROM=http://127.0.0.1:19090 LOKI=http://127.0.0.1:13100 TEMPO=http://127.0.0.1:13200 GRAFANA=http://127.0.0.1:13000
 GF_AUTH="admin:$(cat secrets/grafana_admin_password.txt)"
 
@@ -35,7 +47,10 @@ loki_has() { has_result "$(loki "$1")"; }
 no_email_in_loki() { ! grep -q '@example.com' <<<"$(loki '{service_name=~".+"} |= "@example.com"' 100)"; }
 
 echo "Stack"
-check "all observability pods ready"   kubectl -n $OBS wait pod --all --for=condition=Ready --timeout=120s
+check "all observability pods ready"   kubectl -n $OBS wait pod --all --for=condition=Ready --timeout=300s
+forward kps-prometheus 19090 9090 /-/ready
+forward loki 13100 3100 /ready
+forward tempo 13200 3200 /ready
 
 # --- traffic, so there is something to find --------------------------------
 IMAGE=$(kubectl -n $APP get deploy token-service-api -o jsonpath='{.spec.template.spec.containers[0].image}')
@@ -50,6 +65,7 @@ done
 curl -s -o /dev/null -X POST "$API/token" -H "Content-Type: application/json" -d '{"user_email":"alice@example.com"}'  # a 401
 
 echo "Metrics (Prometheus)"
+forward kps-prometheus 19090 9090 /-/ready
 check "both app jobs scraped and up (4 pods)" retry 90 prom_has 'count(up{job=~"python-token-service|go-token-service"} == 1) == 4'
 check "RED: HTTP request rate by status"  retry 60 prom_has 'sum by (status) (rate(http_requests_total[1m]))'
 check "RED: gRPC calls by code"            prom_has 'sum by (grpc_code) (grpc_server_handled_total)'
@@ -64,6 +80,7 @@ check "SLO alert rules loaded"             retry 60 slo_rules
 check "SLO error ratio is being recorded"  retry 90 slo_recorded
 
 echo "Logs (Loki)"
+forward loki 13100 3100 /ready
 check "Python logs arrive"                 retry 60 loki_has '{service_name="python-token-service"}'
 check "Go logs arrive"                     retry 60 loki_has '{service_name="go-token-service"}'
 check "logs carry trace_id"                retry 30 loki_has '{service_name="python-token-service"} | trace_id != ""'
@@ -71,6 +88,7 @@ check "logs carry the Kubernetes pod name" loki_has '{service_name="go-token-ser
 check "no email address stored"            no_email_in_loki
 
 echo "One request, end to end (Tempo + Loki)"
+forward tempo 13200 3200 /ready; forward loki 13100 3100 /ready
 # The API returns X-Trace-Id; follow that one request through traces and logs
 TRACE_ID=$(curl -s -D - -o /dev/null -X POST "$API/token" -H "Authorization: Bearer $JWT" \
   -H "Content-Type: application/json" -d '{"user_email":"bob@example.com"}' \
@@ -98,8 +116,10 @@ check "Loki: Go log lines for this request"  retry 60 logs_for_trace go-token-se
 echo "  Loki query: {service_name=~\"python-token-service|go-token-service\"} | trace_id=\"$TRACE_ID\""
 
 echo "Grafana"
-check "login works with the secret"        curl -sf -u "$GF_AUTH" "$GRAFANA/api/user"
-DS=$(curl -s -u "$GF_AUTH" "$GRAFANA/api/datasources")
+forward grafana 13000 80 /api/health
+check "login works with the secret"        retry 60 curl -sf -u "$GF_AUTH" "$GRAFANA/api/user"
+datasources_loaded() { DS=$(curl -s -u "$GF_AUTH" "$GRAFANA/api/datasources"); grep -q '"uid":"tempo"' <<<"$DS"; }
+retry 60 datasources_loaded
 for uid in prometheus loki tempo; do
   check "data source '$uid'"               grep -q "\"uid\":\"$uid\"" <<<"$DS"
 done
