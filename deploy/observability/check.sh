@@ -47,7 +47,23 @@ loki_has() { has_result "$(loki "$1")"; }
 no_email_in_loki() { ! grep -q '@example.com' <<<"$(loki '{service_name=~".+"} |= "@example.com"' 100)"; }
 
 echo "Stack"
-check "all observability pods ready"   kubectl -n $OBS wait pod --all --for=condition=Ready --timeout=300s
+# Wait on the workloads, not on every pod: finished Job pods (chart hooks) and
+# pods replaced during smoke.sh's drain are never "Ready" and would fail a plain
+# `kubectl wait pod --all`, even when everything that matters is running.
+workloads_ready() {
+  local w
+  for w in $(kubectl -n "$OBS" get deploy,sts,ds -o name); do
+    kubectl -n "$OBS" rollout status "$w" --timeout=10s >/dev/null 2>&1 || { echo "  not ready yet: $w"; return 1; }
+  done
+}
+if retry 300 workloads_ready; then
+  ok "all observability workloads ready"
+else
+  bad "all observability workloads ready"
+  kubectl -n "$OBS" get deploy,sts,ds
+  kubectl -n "$OBS" get pods -o wide | grep -v -E '\s(Running|Completed)\s' || true
+  kubectl -n "$OBS" get events --sort-by=.lastTimestamp | tail -15
+fi
 forward kps-prometheus 19090 9090 /-/ready
 forward loki 13100 3100 /ready
 forward tempo 13200 3200 /ready
