@@ -6,7 +6,7 @@ dependencies = [
     "fastapi>=0.128.0",
     "starlette>=1.3.1", # pip-audit: PYSEC-2026-161/248/249/2280/2281
     "uvicorn==0.40.0",
-    "psycopg2-binary==2.9.11",
+    "psycopg2-binary==2.9.13",
     "grpcio==1.76.0",
     "grpcio-tools==1.76.0",
     "prometheus-client==0.24.1",
