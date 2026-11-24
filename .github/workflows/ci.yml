@@ -27,7 +27,7 @@ jobs:
       run: bash scripts/init-secrets.sh
 
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v7
       with:
         go-version-file: golang-service/go.mod
 
@@ -183,7 +183,7 @@ jobs:
       run: docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.21.2 git /repo --redact --verbose
 
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@v7
       with:
         go-version-file: golang-service/go.mod
 
