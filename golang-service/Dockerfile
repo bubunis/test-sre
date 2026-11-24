@@ -1,7 +1,7 @@
 # ---- Stage 1: build a static binary ----
 # Go 1.24 is out of support and its standard library has known vulnerabilities
 # (govulncheck in CI). 1.26 = latest supported line; the tag gets its newest patch.
-FROM golang:1.26-alpine AS builder
+FROM golang:1.27-alpine AS builder
 
 WORKDIR /src
 
