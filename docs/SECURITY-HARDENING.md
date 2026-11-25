@@ -105,7 +105,7 @@ Why these choices:
 
 **Gotcha:** the expired-token check in CI first came back 200. My test token had expired only 10 seconds earlier, which is inside the 30-second leeway, so the API was right to accept it. The test was wrong. The unit tests hadn't caught it because they used a leeway of 0. I changed the test token to expire 2 minutes earlier, and added a unit test that pins both sides of the boundary. Lesson: test boundaries with the real setting, not a test-only value.
 
-What JWT doesn't solve yet: it proves *who* is calling, not *which users* that caller is allowed to request tokens for. That's decision D2, per-client grants, and it's still open.
+What JWT doesn't solve yet: it proves *who* is calling, not *which users* that caller is allowed to request tokens for. That's decision , per-client grants, and it's still open.
 
 ## Later steps, in short
 
@@ -117,7 +117,7 @@ What JWT doesn't solve yet: it proves *who* is calling, not *which users* that c
 
 ## Still open
 
-- **Any authenticated caller can request any user.** Needs per-client grants (D2).
+- **Any authenticated caller can request any user.** Needs per-client grants.
 - **In Docker Compose, any container on the network can call the Go service directly.** Closed on Kubernetes by NetworkPolicies; the 2b plan (separate Docker networks) would close it in Compose.
 - **Traffic between services isn't encrypted, and the Go service trusts the network, not an identity.** mTLS fixes both: Istio (ambient mode) on Kubernetes, skipped for now for complexity and laptop resources (see 2b), or mTLS in the services themselves.
 - **Tokens are stored in Redis as the raw key.** Anyone who can read Redis can copy a valid token. I want to store a SHA-256 of the token instead.
