@@ -14,7 +14,7 @@ tempo:
     # them to exist. Unused - the collector sends OTLP only.
   resources:
     requests: { cpu: 50m, memory: 128Mi }
-    limits:   { memory: 512Mi }
+    limits:   { memory: 1Gi }
 persistence:
   enabled: true
   size: 2Gi
